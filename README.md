@@ -55,10 +55,56 @@ on:
   - manual
   - pre-push
 steps:
+  - name: Checkout
+    uses: checkout
+    with:
+      submodules: recursive
   - name: Format
     run: cargo fmt --check
   - name: Test
     run: cargo test --all
+  - name: Build
+    run: cargo build --release
+```
+
+Native `.ci/*.yml` steps also support first-class conditions:
+
+- `if: success` or `if: success()`: run when the current step path is still successful. This is the default when `if` is omitted.
+- `if: failure` or `if: failure()`: run after the previous executed step failed.
+- `if: always` or `if: always()`: run regardless of the previous step result.
+- `if: exists(cargo)`: true when a bare command exists on `PATH`, or when a repo-relative or absolute file/directory path exists.
+- `if: missing(cargo)`: inverse existence check.
+
+To add a fallback step after a failure and still let the workflow recover, mark the failing step with `continue-on-error: true`.
+
+```yaml
+steps:
+  - name: Build with host cargo
+    run: cargo build --release
+    continue-on-error: true
+  - name: Build with toolbox cargo
+    if: "failure && exists(flatpak-spawn) && exists(toolbox)"
+    run: flatpak-spawn --host toolbox run cargo build --release
+```
+
+Native `.ci/*.yml` steps can also use built-in `uses:` values:
+
+- `checkout`: local checkout no-op with optional `with.submodules: true|recursive`
+- `submodules`: force `git submodule update --init --recursive`
+- `cache`: restore and save cache paths using `with.key` and `with.path`
+- `upload-artifact`: store artifacts using `with.name` and `with.path`
+- `download-artifact`: restore artifacts using `with.name` and optional `with.path`
+- `cleanup`: remove repo-relative files or directories listed in `with.path` or `with.paths`
+
+```yaml
+steps:
+  - uses: checkout
+    with:
+      submodules: recursive
+  - uses: cleanup
+    if: "exists(target)"
+    with:
+      path: target
   - name: Build
     run: cargo build --release
 ```

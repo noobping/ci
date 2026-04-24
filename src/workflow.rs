@@ -4,6 +4,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+use serde_yaml::Value;
 use walkdir::WalkDir;
 
 use crate::actions::{self, ActionsProvider, ActionsWorkflow};
@@ -98,21 +99,31 @@ pub struct ContainerWorkflow {
     pub metadata: WorkflowOverride,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct NativeStep {
     pub name: Option<String>,
-    pub run: String,
+    pub run: Option<String>,
+    pub uses: Option<String>,
+    pub with: BTreeMap<String, String>,
     pub shell: Option<String>,
-    #[serde(default)]
     pub env: BTreeMap<String, String>,
-    #[serde(rename = "if")]
     pub if_condition: Option<String>,
-    #[serde(rename = "working-directory")]
     pub working_directory: Option<String>,
-    #[serde(rename = "continue-on-error", default)]
     pub continue_on_error: bool,
-    #[serde(rename = "timeout-minutes")]
     pub timeout_minutes: Option<u64>,
+}
+
+impl NativeStep {
+    fn validate(self, workflow_path: &Path, index: usize) -> Result<Self> {
+        match (self.run.is_some(), self.uses.is_some()) {
+            (true, false) | (false, true) => Ok(self),
+            _ => Err(crate::error::CiError::Message(format!(
+                "{} step {} must define exactly one of `run` or `uses`",
+                workflow_path.display(),
+                index + 1
+            ))),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -153,7 +164,45 @@ struct NativeWorkflowFile {
     #[serde(default)]
     env: BTreeMap<String, String>,
     #[serde(default)]
-    steps: Vec<NativeStep>,
+    steps: Vec<RawNativeStep>,
+}
+
+#[derive(Clone, Debug, Deserialize, Default)]
+struct RawNativeStep {
+    name: Option<String>,
+    run: Option<String>,
+    uses: Option<String>,
+    shell: Option<String>,
+    #[serde(default)]
+    env: BTreeMap<String, Value>,
+    #[serde(default)]
+    with: BTreeMap<String, Value>,
+    #[serde(rename = "if")]
+    if_condition: Option<String>,
+    #[serde(rename = "working-directory")]
+    working_directory: Option<String>,
+    #[serde(rename = "continue-on-error", default)]
+    continue_on_error: bool,
+    #[serde(rename = "timeout-minutes")]
+    timeout_minutes: Option<u64>,
+}
+
+impl RawNativeStep {
+    fn into_step(self, workflow_path: &Path, index: usize) -> Result<NativeStep> {
+        NativeStep {
+            name: self.name,
+            run: self.run,
+            uses: self.uses,
+            with: stringify_yaml_map(self.with),
+            shell: self.shell,
+            env: stringify_yaml_map(self.env),
+            if_condition: self.if_condition,
+            working_directory: self.working_directory,
+            continue_on_error: self.continue_on_error,
+            timeout_minutes: self.timeout_minutes,
+        }
+        .validate(workflow_path, index)
+    }
 }
 
 impl NativeWorkflowFile {
@@ -491,6 +540,12 @@ fn discover_actions_dir(dir: &Path, provider: ActionsProvider, workflows: &mut V
 fn discover_native_yaml(base: &Path, path: &Path) -> Result<Workflow> {
     let file: NativeWorkflowFile = serde_yaml::from_str(&fs::read_to_string(path)?)?;
     let metadata = file.metadata();
+    let steps = file
+        .steps
+        .into_iter()
+        .enumerate()
+        .map(|(index, step)| step.into_step(path, index))
+        .collect::<Result<Vec<_>>>()?;
     Ok(Workflow {
         name: file
             .name
@@ -501,7 +556,7 @@ fn discover_native_yaml(base: &Path, path: &Path) -> Result<Workflow> {
         provider: WorkflowProvider::Native,
         source: WorkflowSource::NativeYaml(NativeWorkflow {
             metadata,
-            steps: file.steps,
+            steps,
         }),
     })
 }
@@ -609,6 +664,25 @@ fn path_to_name(path: &Path) -> String {
 fn is_executable(path: &Path) -> Result<bool> {
     let mode = fs::metadata(path)?.permissions().mode();
     Ok(mode & 0o111 != 0)
+}
+
+fn stringify_yaml_map(map: BTreeMap<String, Value>) -> BTreeMap<String, String> {
+    map.into_iter()
+        .map(|(key, value)| (key, stringify_yaml_value(&value)))
+        .collect()
+}
+
+fn stringify_yaml_value(value: &Value) -> String {
+    match value {
+        Value::Null => String::new(),
+        Value::Bool(value) => value.to_string(),
+        Value::Number(value) => value.to_string(),
+        Value::String(value) => value.clone(),
+        other => serde_yaml::to_string(other)
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+    }
 }
 
 impl Workflow {
