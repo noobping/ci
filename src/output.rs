@@ -26,12 +26,12 @@ impl Output {
     pub fn from_globals(global: &GlobalOptions) -> Self {
         init_tracing(global);
 
-        let verbosity = if global.silent {
+        let verbosity = if global.verbose > 0 {
+            Verbosity::Verbose(global.verbose)
+        } else if global.silent {
             Verbosity::Silent
         } else if global.quiet {
             Verbosity::Quiet
-        } else if global.verbose > 0 {
-            Verbosity::Verbose(global.verbose)
         } else {
             Verbosity::Normal
         };
@@ -92,5 +92,38 @@ fn color_enabled(color: ColorWhen) -> bool {
         ColorWhen::Always => true,
         ColorWhen::Never => false,
         ColorWhen::Auto => std::io::stdout().is_terminal() || std::io::stderr().is_terminal(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use crate::cli::GlobalOptions;
+    use crate::config::ColorWhen;
+
+    use super::{Output, Verbosity};
+
+    fn globals() -> GlobalOptions {
+        GlobalOptions {
+            verbose: 0,
+            quiet: false,
+            silent: false,
+            repo: PathBuf::from("."),
+            ci_dir: PathBuf::from(".ci"),
+            config: None,
+            color: ColorWhen::Never,
+            git_mode: None,
+            git_image: None,
+        }
+    }
+
+    #[test]
+    fn verbose_overrides_silent() {
+        let mut global = globals();
+        global.verbose = 1;
+        global.silent = true;
+
+        assert_eq!(Output::from_globals(&global).verbosity(), Verbosity::Verbose(1));
     }
 }
