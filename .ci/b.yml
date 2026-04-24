@@ -21,7 +21,3 @@ steps:
     run: cargo build --release
   - if: missing(cargo)
     run: toolbox run cargo build --release
-
-  - uses: clean
-    cargo: false
-    ignored: false
