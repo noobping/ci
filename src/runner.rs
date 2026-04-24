@@ -816,9 +816,11 @@ fn run_actions_uses_step(
         extra: None,
         inline_run: None,
         shell: Some(
-            step.shell
+            execution
+                .job
+                .defaults
+                .shell
                 .as_deref()
-                .or(execution.job.defaults.shell.as_deref())
                 .or(execution.workflow.defaults.shell.as_deref())
                 .unwrap_or(&ctx.config.defaults.shell)
                 .to_string(),
@@ -991,7 +993,10 @@ fn run_builtin_step(
                 .shell
                 .as_deref()
                 .unwrap_or(&ctx.config.defaults.shell),
-            invocation.workdir.as_deref().unwrap_or(invocation.expr.root),
+            invocation
+                .workdir
+                .as_deref()
+                .unwrap_or(invocation.expr.root),
             invocation.expr,
         )?)),
         "cleanup" | "ci/cleanup" => Ok(Some(run_cleanup_step(
@@ -1421,7 +1426,7 @@ fn run_shell(
 ) -> Result<i32> {
     let mut command = Command::new(shell);
     command
-        .arg("-lc")
+        .arg("-c")
         .arg(script)
         .current_dir(workdir)
         .envs(env)
@@ -1599,7 +1604,7 @@ impl ContainerBackend {
         command
             .arg(spec.image)
             .arg(spec.shell)
-            .arg("-lc")
+            .arg("-c")
             .arg(spec.script)
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
