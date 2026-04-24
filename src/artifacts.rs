@@ -304,7 +304,7 @@ pub fn load_manifests(dir: &Path) -> Result<Vec<RunManifest>> {
     if !dir.exists() {
         return Ok(Vec::new());
     }
-    let mut manifests = Vec::new();
+    let mut manifests: Vec<RunManifest> = Vec::new();
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();

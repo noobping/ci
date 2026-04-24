@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -19,6 +20,17 @@ pub enum ColorWhen {
     Auto,
     Always,
     Never,
+}
+
+impl fmt::Display for ColorWhen {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Auto => "auto",
+            Self::Always => "always",
+            Self::Never => "never",
+        };
+        f.write_str(value)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]

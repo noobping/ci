@@ -11,7 +11,7 @@ use crate::config::{
     ArtifactConfig, BranchConfig, ContainerConfig, EventFilter, ExecutionConfig, ResolvedConfig,
     WorkflowOverride,
 };
-use crate::error::{CiError, Result};
+use crate::error::Result;
 use crate::repo::RepoInfo;
 
 pub const CLIENT_HOOKS: &[&str] = &[

@@ -206,8 +206,9 @@ pub fn rewrite_argv(mut argv: Vec<OsString>) -> Vec<OsString> {
         .first()
         .and_then(|value| std::path::Path::new(value).file_name())
         .and_then(OsStr::to_str)
+        .map(str::to_string)
     {
-        if is_known_hook(name) {
+        if is_known_hook(&name) {
             argv.insert(1, OsString::from("hook"));
             argv.insert(2, OsString::from(name));
             return argv;

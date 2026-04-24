@@ -386,6 +386,7 @@ fn run_native_yaml(
                 &ctx.repo.root,
                 step.working_directory
                     .as_deref()
+                    .map(Path::new)
                     .or(resolved.execution.workspace.as_deref()),
             ),
             &condition_env,
@@ -605,8 +606,9 @@ fn run_actions_run_step(
         &ctx.repo.root,
         step.working_directory
             .as_deref()
-            .or(job.defaults.working_directory.as_deref())
-            .or(workflow.defaults.working_directory.as_deref())
+            .map(Path::new)
+            .or_else(|| job.defaults.working_directory.as_deref().map(Path::new))
+            .or_else(|| workflow.defaults.working_directory.as_deref().map(Path::new))
             .or(resolved.execution.workspace.as_deref()),
     );
 
@@ -772,7 +774,10 @@ fn run_local_action(
                         let script = interpolate_expressions(&step.run, &expr);
                         let workdir = resolve_workdir(
                             dir,
-                            step.working_directory.as_deref().or(Some(".")),
+                            step.working_directory
+                                .as_deref()
+                                .map(Path::new)
+                                .or(Some(Path::new("."))),
                         );
                         let status = run_shell(shell, &script, &workdir, base_env)?;
                         success = status == 0;
@@ -780,7 +785,7 @@ fn run_local_action(
                             return Ok(status);
                         }
                     }
-                    ActionMetadataStep::Uses(_) => {
+                    ActionMetadataStep::Uses => {
                         return Err(CiError::Message(format!(
                             "composite action {} contains nested `uses`, which is not supported yet",
                             dir.display()
@@ -1433,8 +1438,6 @@ struct RawActionMetadataStep {
     shell: Option<String>,
     #[serde(default)]
     env: BTreeMap<String, String>,
-    #[serde(default)]
-    with: BTreeMap<String, String>,
     #[serde(rename = "working-directory")]
     working_directory: Option<String>,
     #[serde(rename = "continue-on-error", default)]
@@ -1444,7 +1447,7 @@ struct RawActionMetadataStep {
 #[derive(Clone, Debug)]
 enum ActionMetadataStep {
     Run(ActionRunStep),
-    Uses(ActionUsesStep),
+    Uses,
 }
 
 enum ActionRuns {
@@ -1495,15 +1498,7 @@ fn load_action_metadata(dir: &Path) -> Result<ActionDefinition> {
                             continue_on_error: step.continue_on_error,
                             timeout_minutes: None,
                         })),
-                        (None, Some(uses)) => Ok(ActionMetadataStep::Uses(ActionUsesStep {
-                            name,
-                            uses,
-                            with: step.with,
-                            env: step.env,
-                            if_condition: step.if_condition,
-                            working_directory: step.working_directory,
-                            continue_on_error: step.continue_on_error,
-                        })),
+                        (None, Some(_uses)) => Ok(ActionMetadataStep::Uses),
                         _ => Err(CiError::Message(format!(
                             "action {} has a composite step without exactly one of `run` or `uses`",
                             dir.display()
