@@ -50,7 +50,13 @@ pub struct ArtifactSession {
 }
 
 impl ArtifactSession {
-    pub fn new(repo: &RepoInfo, event: &str, branch: Option<&str>, run_id: &str, output: Output) -> Result<Self> {
+    pub fn new(
+        repo: &RepoInfo,
+        event: &str,
+        branch: Option<&str>,
+        run_id: &str,
+        output: Output,
+    ) -> Result<Self> {
         repo.ensure_state_dirs()?;
         Ok(Self {
             repo_root: repo.root.clone(),
@@ -85,9 +91,9 @@ impl ArtifactSession {
         let mut entries = Vec::new();
         for pattern in &artifacts.paths {
             let joined = self.repo_root.join(pattern);
-            let pattern = joined
-                .to_str()
-                .ok_or_else(|| CiError::Message(format!("invalid artifact pattern {}", joined.display())))?;
+            let pattern = joined.to_str().ok_or_else(|| {
+                CiError::Message(format!("invalid artifact pattern {}", joined.display()))
+            })?;
             for path in glob(pattern)? {
                 let path = path?;
                 if !path.exists() {
@@ -100,12 +106,20 @@ impl ArtifactSession {
                     .join(&self.manifest.run_id)
                     .join(relative);
                 if dry_run {
-                    println!("would store artifact {} at {}", path.display(), target.display());
+                    println!(
+                        "would store artifact {} at {}",
+                        path.display(),
+                        target.display()
+                    );
                 } else {
                     store_path(&path, &target, mode)?;
                 }
                 entries.push(ArtifactEntry {
-                    name: relative.file_name().and_then(|value| value.to_str()).unwrap_or("artifact").to_string(),
+                    name: relative
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or("artifact")
+                        .to_string(),
                     stored_at: target,
                     original_path: path,
                     mode,
@@ -274,7 +288,11 @@ pub fn cmd_clean(ctx: &AppContext, args: &CleanArgs) -> Result<i32> {
                                     .unwrap_or_else(|| PathBuf::from(&artifact.name)),
                             );
                         if args.dry_run {
-                            println!("would move {} to {}", artifact.stored_at.display(), target.display());
+                            println!(
+                                "would move {} to {}",
+                                artifact.stored_at.display(),
+                                target.display()
+                            );
                         } else if artifact.stored_at.exists() {
                             move_path(&artifact.stored_at, &target)?;
                         }

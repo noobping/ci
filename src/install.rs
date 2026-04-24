@@ -20,8 +20,14 @@ pub struct InstallState {
 #[derive(Clone, Debug)]
 pub enum BinaryState {
     Missing(PathBuf),
-    Symlink { path: PathBuf, target: PathBuf, broken: bool },
-    Copy { path: PathBuf },
+    Symlink {
+        path: PathBuf,
+        target: PathBuf,
+        broken: bool,
+    },
+    Copy {
+        path: PathBuf,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -42,7 +48,8 @@ pub fn cmd_install(ctx: &AppContext, args: &InstallArgs) -> Result<i32> {
 
     ctx.output
         .info(format!("Installing ci into {}", ctx.repo.git_dir.display()));
-    ctx.output.info(format!("Mode: {:?}", args.mode).to_lowercase());
+    ctx.output
+        .info(format!("Mode: {:?}", args.mode).to_lowercase());
 
     if args.dry_run {
         println!("would create directory {}", ci_bin_dir.display());
@@ -85,7 +92,11 @@ pub fn cmd_update(ctx: &AppContext, args: &UpdateArgs) -> Result<i32> {
     }
 
     if args.dry_run {
-        println!("would update {} from {}", ci_bin.display(), source.display());
+        println!(
+            "would update {} from {}",
+            ci_bin.display(),
+            source.display()
+        );
     } else {
         fs::create_dir_all(managed_runner_dir(&ctx.repo))?;
         if is_symlink(&ci_bin) {
@@ -113,7 +124,11 @@ pub fn cmd_uninstall(ctx: &AppContext, args: &UninstallArgs) -> Result<i32> {
         if !hook_path.exists() {
             if args.restore && backup_path.exists() {
                 if args.dry_run {
-                    println!("would restore {} to {}", backup_path.display(), hook_path.display());
+                    println!(
+                        "would restore {} to {}",
+                        backup_path.display(),
+                        hook_path.display()
+                    );
                 } else {
                     fs::rename(&backup_path, &hook_path)?;
                 }
@@ -135,7 +150,11 @@ pub fn cmd_uninstall(ctx: &AppContext, args: &UninstallArgs) -> Result<i32> {
 
         if args.restore && backup_path.exists() {
             if args.dry_run {
-                println!("would restore {} to {}", backup_path.display(), hook_path.display());
+                println!(
+                    "would restore {} to {}",
+                    backup_path.display(),
+                    hook_path.display()
+                );
             } else {
                 fs::rename(&backup_path, &hook_path)?;
             }
@@ -204,7 +223,11 @@ pub fn parse_hooks(input: Option<&str>, is_bare: bool) -> Result<Vec<&'static st
         "server" => crate::workflow::SERVER_HOOKS.to_vec(),
         other => {
             let mut hooks = Vec::new();
-            for hook in other.split(',').map(str::trim).filter(|item| !item.is_empty()) {
+            for hook in other
+                .split(',')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+            {
                 let known = all_hooks()
                     .into_iter()
                     .find(|candidate| *candidate == hook)

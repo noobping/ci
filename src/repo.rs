@@ -25,7 +25,8 @@ impl RepoInfo {
     pub fn discover(global: &GlobalOptions, git: &GitService) -> Result<Self> {
         let repo_arg = absolute_path(&global.repo)?;
         let git_dir_raw = git.output_in_dir(&repo_arg, &["rev-parse", "--git-dir"])?;
-        let is_bare = git.output_in_dir(&repo_arg, &["rev-parse", "--is-bare-repository"])? == "true";
+        let is_bare =
+            git.output_in_dir(&repo_arg, &["rev-parse", "--is-bare-repository"])? == "true";
 
         let git_dir_path = PathBuf::from(git_dir_raw.trim());
         let git_dir = if git_dir_path.is_absolute() {
@@ -50,8 +51,8 @@ impl RepoInfo {
             root.join(&global.ci_dir)
         };
 
-        let current_exe =
-            env::current_exe().map_err(|err| CiError::Message(format!("could not find current executable: {err}")))?;
+        let current_exe = env::current_exe()
+            .map_err(|err| CiError::Message(format!("could not find current executable: {err}")))?;
         let state_dir = git_dir.join("ci");
 
         Ok(Self {

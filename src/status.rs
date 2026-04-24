@@ -20,7 +20,14 @@ pub fn cmd_status(ctx: &AppContext, _args: &StatusArgs) -> crate::error::Result<
     println!("CI dir:     {}", ctx.repo.ci_dir.display());
     println!("Bare repo:  {}", ctx.repo.is_bare);
     println!("Git mode:   {:?}", ctx.git.mode());
-    println!("Config:     {}", if ctx.config.loaded { ctx.config.path.display().to_string() } else { format!("{} (default)", ctx.config.path.display()) });
+    println!(
+        "Config:     {}",
+        if ctx.config.loaded {
+            ctx.config.path.display().to_string()
+        } else {
+            format!("{} (default)", ctx.config.path.display())
+        }
+    );
     println!();
 
     if ctx.repo.ci_dir.exists() {
@@ -32,7 +39,14 @@ pub fn cmd_status(ctx: &AppContext, _args: &StatusArgs) -> crate::error::Result<
     println!("OK   found {} workflow(s)", workflows.len());
     for workflow in &workflows {
         let details = match &workflow.source {
-            WorkflowSource::Actions(action) => format!("events: {:?}", action.events.iter().map(|event| event.name.clone()).collect::<Vec<_>>()),
+            WorkflowSource::Actions(action) => format!(
+                "events: {:?}",
+                action
+                    .events
+                    .iter()
+                    .map(|event| event.name.clone())
+                    .collect::<Vec<_>>()
+            ),
             _ => String::new(),
         };
         println!(
@@ -45,11 +59,22 @@ pub fn cmd_status(ctx: &AppContext, _args: &StatusArgs) -> crate::error::Result<
     }
 
     match install.binary {
-        BinaryState::Missing(path) => println!("WARN ci binary is not installed into this repository ({})", path.display()),
+        BinaryState::Missing(path) => println!(
+            "WARN ci binary is not installed into this repository ({})",
+            path.display()
+        ),
         BinaryState::Copy { path } => println!("OK   ci copy installed at {}", path.display()),
-        BinaryState::Symlink { path, target, broken } => {
+        BinaryState::Symlink {
+            path,
+            target,
+            broken,
+        } => {
             if broken {
-                println!("WARN ci symlink {} -> {} is broken", path.display(), target.display());
+                println!(
+                    "WARN ci symlink {} -> {} is broken",
+                    path.display(),
+                    target.display()
+                );
             } else {
                 println!("OK   ci symlink {} -> {}", path.display(), target.display());
             }
@@ -80,12 +105,20 @@ pub fn cmd_status(ctx: &AppContext, _args: &StatusArgs) -> crate::error::Result<
     println!(
         "{}   host git {}",
         if command_exists("git") { "OK" } else { "WARN" },
-        if command_exists("git") { "available" } else { "missing" }
+        if command_exists("git") {
+            "available"
+        } else {
+            "missing"
+        }
     );
     println!(
         "{}   node {}",
         if command_exists("node") { "OK" } else { "WARN" },
-        if command_exists("node") { "available" } else { "missing" }
+        if command_exists("node") {
+            "available"
+        } else {
+            "missing"
+        }
     );
 
     println!("OK   actions cache: {}", ctx.repo.actions_cache.display());

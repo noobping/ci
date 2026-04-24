@@ -298,10 +298,12 @@ pub fn load_actions_workflow(path: &Path, provider: ActionsProvider) -> Result<A
 
     let defaults = raw.defaults.unwrap_or_default();
     let workflow = ActionsWorkflow {
-        name: raw
-            .name
-            .clone()
-            .unwrap_or_else(|| path.file_stem().and_then(|value| value.to_str()).unwrap_or("workflow").to_string()),
+        name: raw.name.clone().unwrap_or_else(|| {
+            path.file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("workflow")
+                .to_string()
+        }),
         path: path.to_path_buf(),
         provider,
         events: parse_events(path, raw.on_value.as_ref())?,
@@ -367,14 +369,19 @@ fn parse_jobs(path: &Path, raw: BTreeMap<String, RawJob>) -> Result<Vec<ActionsJ
         }
 
         let defaults = job.defaults.unwrap_or_default();
-        let matrix = expand_matrix(job.strategy.as_ref().and_then(|value| value.matrix.as_ref()))?;
+        let matrix = expand_matrix(
+            job.strategy
+                .as_ref()
+                .and_then(|value| value.matrix.as_ref()),
+        )?;
 
         let mut steps = Vec::new();
         for (index, step) in job.steps.into_iter().enumerate() {
-            let name = step
-                .name
-                .clone()
-                .unwrap_or_else(|| step.uses.clone().unwrap_or_else(|| format!("step-{}", index + 1)));
+            let name = step.name.clone().unwrap_or_else(|| {
+                step.uses
+                    .clone()
+                    .unwrap_or_else(|| format!("step-{}", index + 1))
+            });
             if let Some(run) = step.run {
                 steps.push(ActionStep::Run(ActionRunStep {
                     name,

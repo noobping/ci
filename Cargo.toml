@@ -3,7 +3,7 @@ name = "ci"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "A tiny Git-native CI runner that installs itself into Git hooks."
+description = "small Git-native CI runner"
 repository = "https://example.invalid/ci"
 
 [profile.release]

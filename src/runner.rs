@@ -10,7 +10,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use fs2::FileExt;
 use serde::Deserialize;
 
-use crate::actions::{ActionRunStep, ActionService, ActionStep, ActionUsesStep, ActionsJob, ActionsWorkflow};
+use crate::actions::{
+    ActionRunStep, ActionService, ActionStep, ActionUsesStep, ActionsJob, ActionsWorkflow,
+};
 use crate::artifacts::ArtifactSession;
 use crate::cli::{GlobalOptions, HookArgs, InitArgs, ListArgs, RunArgs, SelfArgs};
 use crate::config::{ContainerRuntime, ResolvedConfig};
@@ -144,8 +146,10 @@ struct BuiltinStepState<'a> {
 pub fn cmd_list(ctx: &AppContext, _args: &ListArgs) -> Result<i32> {
     let workflows = workflow::discover_all(&ctx.repo)?;
     if workflows.is_empty() {
-        ctx.output
-            .info(format!("No workflows found in {}", ctx.repo.ci_dir.display()));
+        ctx.output.info(format!(
+            "No workflows found in {}",
+            ctx.repo.ci_dir.display()
+        ));
         return Ok(0);
     }
 
@@ -172,7 +176,11 @@ pub fn cmd_run(ctx: &AppContext, args: &RunArgs) -> Result<i32> {
     };
 
     let invocation = RunInvocation {
-        workflow: if args.all { None } else { args.workflow.clone() },
+        workflow: if args.all {
+            None
+        } else {
+            args.workflow.clone()
+        },
         event: args.event.clone(),
         dry_run: args.dry_run,
         keep_going,
@@ -321,11 +329,20 @@ fn run_one_workflow(
 ) -> Result<i32> {
     let base_env = workflow_env(ctx, invocation, &item.resolved, run_id);
     let status = match &item.workflow.source {
-        WorkflowSource::Executable(_) => run_executable(ctx, invocation, &item.resolved, &base_env)?,
-        WorkflowSource::NativeYaml(native) => {
-            run_native_yaml(ctx, invocation, &item.resolved, &native.steps, &base_env, artifacts)?
+        WorkflowSource::Executable(_) => {
+            run_executable(ctx, invocation, &item.resolved, &base_env)?
         }
-        WorkflowSource::Container(_) => run_container_workflow(ctx, invocation, &item.resolved, &base_env)?,
+        WorkflowSource::NativeYaml(native) => run_native_yaml(
+            ctx,
+            invocation,
+            &item.resolved,
+            &native.steps,
+            &base_env,
+            artifacts,
+        )?,
+        WorkflowSource::Container(_) => {
+            run_container_workflow(ctx, invocation, &item.resolved, &base_env)?
+        }
         WorkflowSource::Actions(actions) => run_actions_workflow(
             ctx,
             invocation,
@@ -370,7 +387,10 @@ fn run_executable(
 
     let mut command = Command::new(&resolved.path);
     command
-        .current_dir(resolve_workdir(&ctx.repo.root, resolved.execution.workspace.as_deref()))
+        .current_dir(resolve_workdir(
+            &ctx.repo.root,
+            resolved.execution.workspace.as_deref(),
+        ))
         .args(&invocation.hook_args)
         .envs(env)
         .stdin(Stdio::inherit())
@@ -403,7 +423,10 @@ fn run_native_yaml(
 
         let condition_env = merged_env(base_env, &resolved.env, &step.env);
         let expr = ExpressionContext {
-            event: base_env.get("CI_EVENT").map(String::as_str).unwrap_or("manual"),
+            event: base_env
+                .get("CI_EVENT")
+                .map(String::as_str)
+                .unwrap_or("manual"),
             branch: base_env.get("CI_BRANCH").map(String::as_str),
             root: &ctx.repo.root,
             env: &condition_env,
@@ -413,7 +436,8 @@ fn run_native_yaml(
             previous_failed,
         };
         if !evaluate_condition(step.if_condition.as_deref(), &expr) {
-            ctx.output.verbose(format!("skipping step `{step_name}` due to condition"));
+            ctx.output
+                .verbose(format!("skipping step `{step_name}` due to condition"));
             continue;
         }
 
@@ -465,10 +489,12 @@ fn run_native_uses_step(
     artifacts: &mut ArtifactSession,
     cache_state: &mut CacheState,
 ) -> Result<i32> {
-    let uses = step
-        .uses
-        .as_deref()
-        .ok_or_else(|| CiError::Message(format!("{} native step is missing `uses`", resolved.path.display())))?;
+    let uses = step.uses.as_deref().ok_or_else(|| {
+        CiError::Message(format!(
+            "{} native step is missing `uses`",
+            resolved.path.display()
+        ))
+    })?;
     let invocation = BuiltinStepInvocation {
         workflow_name: &resolved.name,
         default_name,
@@ -480,8 +506,7 @@ fn run_native_uses_step(
         artifacts,
         cache_state,
     };
-    run_builtin_step(ctx, &invocation, &mut state)?
-    .ok_or_else(|| {
+    run_builtin_step(ctx, &invocation, &mut state)?.ok_or_else(|| {
         CiError::Message(format!(
             "{} uses unsupported native built-in `{uses}`",
             resolved.path.display()
@@ -563,8 +588,12 @@ fn run_actions_workflow(
             let mut services = Vec::new();
             if let Some(backend) = &backend {
                 for (name, service) in &job.services {
-                    let container_name =
-                        format!("ci-{}-{}-{}", sanitize_component(&workflow.name), sanitize_component(&job.id), sanitize_component(name));
+                    let container_name = format!(
+                        "ci-{}-{}-{}",
+                        sanitize_component(&workflow.name),
+                        sanitize_component(&job.id),
+                        sanitize_component(name)
+                    );
                     backend.start_service(&container_name, service)?;
                     services.push(container_name);
                 }
@@ -639,7 +668,11 @@ fn run_actions_run_step(
     ctx.output.info(format!("--> {}", step.name));
     let empty_inputs = BTreeMap::new();
     let merged = merged_env(
-        &merged_env(execution.base_env, &execution.workflow.env, &execution.job.env),
+        &merged_env(
+            execution.base_env,
+            &execution.workflow.env,
+            &execution.job.env,
+        ),
         &execution.resolved.env,
         &step.env,
     );
@@ -658,8 +691,10 @@ fn run_actions_run_step(
         previous_failed: status.previous_failed,
     };
     if !evaluate_condition(step.if_condition.as_deref(), &expr) {
-        ctx.output
-            .verbose(format!("skipping action step `{}` due to condition", step.name));
+        ctx.output.verbose(format!(
+            "skipping action step `{}` due to condition",
+            step.name
+        ));
         return Ok(0);
     }
 
@@ -675,8 +710,22 @@ fn run_actions_run_step(
         step.working_directory
             .as_deref()
             .map(Path::new)
-            .or_else(|| execution.job.defaults.working_directory.as_deref().map(Path::new))
-            .or_else(|| execution.workflow.defaults.working_directory.as_deref().map(Path::new))
+            .or_else(|| {
+                execution
+                    .job
+                    .defaults
+                    .working_directory
+                    .as_deref()
+                    .map(Path::new)
+            })
+            .or_else(|| {
+                execution
+                    .workflow
+                    .defaults
+                    .working_directory
+                    .as_deref()
+                    .map(Path::new)
+            })
             .or(execution.resolved.execution.workspace.as_deref()),
     );
 
@@ -708,7 +757,11 @@ fn run_actions_uses_step(
     ctx.output.info(format!("--> {}", step.name));
     let empty_env = BTreeMap::new();
     let merged = merged_env(
-        &merged_env(execution.base_env, &execution.workflow.env, &execution.job.env),
+        &merged_env(
+            execution.base_env,
+            &execution.workflow.env,
+            &execution.job.env,
+        ),
         &empty_env,
         &step.env,
     );
@@ -749,7 +802,9 @@ fn run_actions_uses_step(
         let image = step.uses.trim_start_matches("docker://");
         return execution
             .backend
-            .ok_or_else(|| CiError::Message("docker actions require a container runtime".to_string()))?
+            .ok_or_else(|| {
+                CiError::Message("docker actions require a container runtime".to_string())
+            })?
             .run_shell(&ContainerShellSpec {
                 image,
                 repo_root: &ctx.repo.root,
@@ -828,7 +883,8 @@ fn run_builtin_step(
                 .get("key")
                 .cloned()
                 .unwrap_or_else(|| "default".to_string());
-            let paths = parse_path_list(rendered_with.get("path").map(String::as_str).unwrap_or(""));
+            let paths =
+                parse_path_list(rendered_with.get("path").map(String::as_str).unwrap_or(""));
             restore_cache(ctx, &key, &paths)?;
             state.cache_state.pending.push(PendingCache { key, paths });
             Ok(Some(0))
@@ -838,10 +894,14 @@ fn run_builtin_step(
                 .get("name")
                 .cloned()
                 .unwrap_or_else(|| invocation.default_name.to_string());
-            let paths = parse_path_list(rendered_with.get("path").map(String::as_str).unwrap_or(""));
-            let _ = state
-                .artifacts
-                .upload_named_artifact(invocation.workflow_name, &name, &paths, false)?;
+            let paths =
+                parse_path_list(rendered_with.get("path").map(String::as_str).unwrap_or(""));
+            let _ = state.artifacts.upload_named_artifact(
+                invocation.workflow_name,
+                &name,
+                &paths,
+                false,
+            )?;
             Ok(Some(0))
         }
         "download-artifact" | "actions/download-artifact" => {
@@ -855,7 +915,9 @@ fn run_builtin_step(
                     rendered_with.get("path").map(String::as_str).unwrap_or("."),
                 )),
             );
-            let _ = state.artifacts.download_named_artifact(&name, &dest, false)?;
+            let _ = state
+                .artifacts
+                .download_named_artifact(&name, &dest, false)?;
             Ok(Some(0))
         }
         "cleanup" | "ci/cleanup" => {
@@ -898,7 +960,10 @@ fn run_local_action(
                 match step {
                     ActionMetadataStep::Run(step) => {
                         let expr = ExpressionContext {
-                            event: base_env.get("CI_EVENT").map(String::as_str).unwrap_or("manual"),
+                            event: base_env
+                                .get("CI_EVENT")
+                                .map(String::as_str)
+                                .unwrap_or("manual"),
                             branch: base_env.get("CI_BRANCH").map(String::as_str),
                             root: dir,
                             env: base_env,
@@ -930,7 +995,7 @@ fn run_local_action(
                         return Err(CiError::Message(format!(
                             "composite action {} contains nested `uses`, which is not supported yet",
                             dir.display()
-                        )))
+                        )));
                     }
                 }
             }
@@ -942,8 +1007,9 @@ fn run_local_action(
             entrypoint,
             args,
         } => {
-            let backend = backend
-                .ok_or_else(|| CiError::Message("docker actions require a container runtime".to_string()))?;
+            let backend = backend.ok_or_else(|| {
+                CiError::Message("docker actions require a container runtime".to_string())
+            })?;
             let image = if let Some(image) = image {
                 image
             } else {
@@ -953,7 +1019,11 @@ fn run_local_action(
                     .unwrap_or_else(|| dir.join("Dockerfile"));
                 let tag = format!(
                     "ci-action-{}",
-                    sanitize_component(dir.file_name().and_then(|value| value.to_str()).unwrap_or("action"))
+                    sanitize_component(
+                        dir.file_name()
+                            .and_then(|value| value.to_str())
+                            .unwrap_or("action")
+                    )
                 );
                 let build_status = backend.build(&dockerfile, dir, &tag, None)?;
                 if build_status != 0 {
@@ -983,8 +1053,9 @@ fn run_local_action(
                     .stderr(Stdio::inherit());
                 Ok(command.status()?.code().unwrap_or(1))
             } else {
-                let backend = backend
-                    .ok_or_else(|| CiError::Message("js actions require node or a container runtime".to_string()))?;
+                let backend = backend.ok_or_else(|| {
+                    CiError::Message("js actions require node or a container runtime".to_string())
+                })?;
                 backend.run_shell(&ContainerShellSpec {
                     image: &ctx.config.defaults.node_image,
                     repo_root: dir,
@@ -1016,7 +1087,10 @@ fn interpolate_map(
 }
 
 fn parse_bool(value: &str) -> bool {
-    matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 fn run_cleanup_step(
@@ -1029,9 +1103,7 @@ fn run_cleanup_step(
 ) -> Result<()> {
     if path.is_none() && paths.is_none() {
         let ignored = parse_cleanup_ignored_mode(include_ignored)?;
-        return ctx
-            .git
-            .clean_untracked_files(&ctx.repo, ignored);
+        return ctx.git.clean_untracked_files(&ctx.repo, ignored);
     }
 
     cleanup_repo_paths(root, path, paths, missing_ok)
@@ -1142,9 +1214,15 @@ fn workflow_env(
     env.insert("CI_EVENT".to_string(), invocation.event.clone());
     env.insert("CI_HOOK".to_string(), invocation.event.clone());
     env.insert("CI_REPO".to_string(), ctx.repo.root.display().to_string());
-    env.insert("CI_GIT_DIR".to_string(), ctx.repo.git_dir.display().to_string());
+    env.insert(
+        "CI_GIT_DIR".to_string(),
+        ctx.repo.git_dir.display().to_string(),
+    );
     env.insert("CI_WORKFLOW".to_string(), resolved.name.clone());
-    env.insert("CI_WORKFLOW_PATH".to_string(), resolved.path.display().to_string());
+    env.insert(
+        "CI_WORKFLOW_PATH".to_string(),
+        resolved.path.display().to_string(),
+    );
     env.insert(
         "CI_WORKFLOW_DIR".to_string(),
         resolved
@@ -1168,10 +1246,22 @@ fn workflow_env(
         env.insert("GITEA_REF_NAME".to_string(), branch.clone());
     }
     env.insert("GITHUB_ACTIONS".to_string(), "true".to_string());
-    env.insert("GITHUB_WORKSPACE".to_string(), ctx.repo.root.display().to_string());
-    env.insert("GITHUB_EVENT_NAME".to_string(), canonical_events(&invocation.event).last().cloned().unwrap_or_else(|| invocation.event.clone()));
+    env.insert(
+        "GITHUB_WORKSPACE".to_string(),
+        ctx.repo.root.display().to_string(),
+    );
+    env.insert(
+        "GITHUB_EVENT_NAME".to_string(),
+        canonical_events(&invocation.event)
+            .last()
+            .cloned()
+            .unwrap_or_else(|| invocation.event.clone()),
+    );
     env.insert("GITHUB_WORKFLOW".to_string(), resolved.name.clone());
-    env.insert("GITEA_WORKSPACE".to_string(), ctx.repo.root.display().to_string());
+    env.insert(
+        "GITEA_WORKSPACE".to_string(),
+        ctx.repo.root.display().to_string(),
+    );
     env.insert("GITEA_EVENT_NAME".to_string(), invocation.event.clone());
     for (key, value) in &resolved.env {
         env.insert(key.clone(), value.clone());
@@ -1187,7 +1277,12 @@ fn resolve_workdir(root: &Path, override_dir: Option<&Path>) -> PathBuf {
     }
 }
 
-fn run_shell(shell: &str, script: &str, workdir: &Path, env: &BTreeMap<String, String>) -> Result<i32> {
+fn run_shell(
+    shell: &str,
+    script: &str,
+    workdir: &Path,
+    env: &BTreeMap<String, String>,
+) -> Result<i32> {
     let mut command = Command::new(shell);
     command
         .arg("-lc")
@@ -1265,8 +1360,9 @@ impl RunLock {
             .write(true)
             .truncate(false)
             .open(path)?;
-        file.try_lock_exclusive()
-            .map_err(|_| CiError::Message(format!("another `ci` run is active ({})", path.display())))?;
+        file.try_lock_exclusive().map_err(|_| {
+            CiError::Message(format!("another `ci` run is active ({})", path.display()))
+        })?;
         Ok(Self { file })
     }
 }
@@ -1458,7 +1554,10 @@ impl ContainerBackend {
 }
 
 fn order_jobs(jobs: &[ActionsJob]) -> Result<Vec<ActionsJob>> {
-    let map: BTreeMap<_, _> = jobs.iter().map(|job| (job.id.clone(), job.clone())).collect();
+    let map: BTreeMap<_, _> = jobs
+        .iter()
+        .map(|job| (job.id.clone(), job.clone()))
+        .collect();
     let mut ordered = Vec::new();
     let mut visiting = BTreeSet::new();
     let mut visited = BTreeSet::new();
@@ -1481,7 +1580,9 @@ fn visit_job(
         return Ok(());
     }
     if !visiting.insert(id.to_string()) {
-        return Err(CiError::Message(format!("cyclic job dependency involving `{id}`")));
+        return Err(CiError::Message(format!(
+            "cyclic job dependency involving `{id}`"
+        )));
     }
 
     let job = map
@@ -1507,7 +1608,11 @@ fn parse_path_list(value: &str) -> Vec<String> {
 }
 
 fn restore_cache(ctx: &AppContext, key: &str, paths: &[String]) -> Result<()> {
-    let cache_root = ctx.repo.state_dir.join("cache").join(sanitize_component(key));
+    let cache_root = ctx
+        .repo
+        .state_dir
+        .join("cache")
+        .join(sanitize_component(key));
     if !cache_root.exists() {
         return Ok(());
     }
@@ -1524,7 +1629,11 @@ fn restore_cache(ctx: &AppContext, key: &str, paths: &[String]) -> Result<()> {
 
 fn save_pending_caches(ctx: &AppContext, cache_state: &CacheState) -> Result<()> {
     for pending in &cache_state.pending {
-        let cache_root = ctx.repo.state_dir.join("cache").join(sanitize_component(&pending.key));
+        let cache_root = ctx
+            .repo
+            .state_dir
+            .join("cache")
+            .join(sanitize_component(&pending.key));
         fs::create_dir_all(&cache_root)?;
         for path in &pending.paths {
             let source = ctx.repo.root.join(path);
@@ -1560,10 +1669,14 @@ fn evaluate_condition(expr: Option<&str>, ctx: &ExpressionContext<'_>) -> bool {
     let expr = trim_expr(expr);
 
     if expr.contains("||") {
-        return expr.split("||").any(|part| evaluate_condition(Some(part), ctx));
+        return expr
+            .split("||")
+            .any(|part| evaluate_condition(Some(part), ctx));
     }
     if expr.contains("&&") {
-        return expr.split("&&").all(|part| evaluate_condition(Some(part), ctx));
+        return expr
+            .split("&&")
+            .all(|part| evaluate_condition(Some(part), ctx));
     }
     if let Some(rest) = expr.strip_prefix('!') {
         return !evaluate_condition(Some(rest), ctx);
@@ -1584,10 +1697,18 @@ fn evaluate_condition(expr: Option<&str>, ctx: &ExpressionContext<'_>) -> bool {
         return !condition_target_exists(&resolve_condition_target(target, ctx), ctx);
     }
 
-    if let Some(rest) = expr.strip_prefix("startsWith(").and_then(|value| value.strip_suffix(')')) {
+    if let Some(rest) = expr
+        .strip_prefix("startsWith(")
+        .and_then(|value| value.strip_suffix(')'))
+    {
         let mut parts = rest.splitn(2, ',');
         let left = parts.next().unwrap_or("").trim();
-        let right = parts.next().unwrap_or("").trim().trim_matches('\'').trim_matches('"');
+        let right = parts
+            .next()
+            .unwrap_or("")
+            .trim()
+            .trim_matches('\'')
+            .trim_matches('"');
         return resolve_expr_value(left, ctx)
             .map(|value| value.starts_with(right))
             .unwrap_or(false);
@@ -1634,11 +1755,22 @@ fn resolve_expr_value(expr: &str, ctx: &ExpressionContext<'_>) -> Option<String>
     match trim_expr(expr) {
         "github.ref" | "gitea.ref" => ctx.branch.map(|branch| format!("refs/heads/{branch}")),
         "github.ref_name" | "gitea.ref_name" => ctx.branch.map(ToOwned::to_owned),
-        "github.event_name" | "gitea.event_name" => Some(canonical_events(ctx.event).last().cloned().unwrap_or_else(|| ctx.event.to_string())),
+        "github.event_name" | "gitea.event_name" => Some(
+            canonical_events(ctx.event)
+                .last()
+                .cloned()
+                .unwrap_or_else(|| ctx.event.to_string()),
+        ),
         "github.workspace" | "gitea.workspace" => ctx.env.get("CI_REPO").cloned(),
-        value if value.starts_with("env.") => ctx.env.get(value.trim_start_matches("env.")).cloned(),
-        value if value.starts_with("matrix.") => ctx.matrix.get(value.trim_start_matches("matrix.")).cloned(),
-        value if value.starts_with("inputs.") => ctx.inputs.get(value.trim_start_matches("inputs.")).cloned(),
+        value if value.starts_with("env.") => {
+            ctx.env.get(value.trim_start_matches("env.")).cloned()
+        }
+        value if value.starts_with("matrix.") => {
+            ctx.matrix.get(value.trim_start_matches("matrix.")).cloned()
+        }
+        value if value.starts_with("inputs.") => {
+            ctx.inputs.get(value.trim_start_matches("inputs.")).cloned()
+        }
         value => Some(trim_literal(value)),
     }
 }
@@ -1860,10 +1992,11 @@ fn load_action_metadata(dir: &Path) -> Result<ActionDefinition> {
                 .into_iter()
                 .enumerate()
                 .map(|(index, step)| {
-                    let name = step
-                        .name
-                        .clone()
-                        .unwrap_or_else(|| step.uses.clone().unwrap_or_else(|| format!("step-{}", index + 1)));
+                    let name = step.name.clone().unwrap_or_else(|| {
+                        step.uses
+                            .clone()
+                            .unwrap_or_else(|| format!("step-{}", index + 1))
+                    });
                     match (step.run, step.uses) {
                         (Some(run), None) => Ok(ActionMetadataStep::Run(ActionRunStep {
                             name,
@@ -1892,8 +2025,12 @@ fn load_action_metadata(dir: &Path) -> Result<ActionDefinition> {
                     args,
                 },
                 value if value.starts_with("node") => ActionRuns::Node {
-                    main: main
-                        .ok_or_else(|| CiError::Message(format!("node action {} is missing runs.main", dir.display())))?,
+                    main: main.ok_or_else(|| {
+                        CiError::Message(format!(
+                            "node action {} is missing runs.main",
+                            dir.display()
+                        ))
+                    })?,
                 },
                 other => {
                     return Err(CiError::Message(format!(
@@ -1954,8 +2091,14 @@ mod tests {
     fn native_condition_defaults_to_success() {
         let temp = TempDir::new().expect("tempdir");
         let env = BTreeMap::new();
-        assert!(evaluate_condition(None, &expr_ctx(temp.path(), &env, true, false)));
-        assert!(!evaluate_condition(None, &expr_ctx(temp.path(), &env, false, true)));
+        assert!(evaluate_condition(
+            None,
+            &expr_ctx(temp.path(), &env, true, false)
+        ));
+        assert!(!evaluate_condition(
+            None,
+            &expr_ctx(temp.path(), &env, false, true)
+        ));
     }
 
     #[test]
@@ -1988,8 +2131,14 @@ mod tests {
         let condition = format!("exists('{tool}')");
         let missing = format!("missing('{tool}-missing')");
 
-        assert!(evaluate_condition(Some(&condition), &expr_ctx(temp.path(), &env, true, false)));
-        assert!(evaluate_condition(Some(&missing), &expr_ctx(temp.path(), &env, true, false)));
+        assert!(evaluate_condition(
+            Some(&condition),
+            &expr_ctx(temp.path(), &env, true, false)
+        ));
+        assert!(evaluate_condition(
+            Some(&missing),
+            &expr_ctx(temp.path(), &env, true, false)
+        ));
         assert!(executable_exists(&tool));
         assert!(!executable_exists(&format!("{tool}-missing")));
     }
@@ -2011,7 +2160,10 @@ mod tests {
         assert!(evaluate_condition(Some("exists(path:marker.txt)"), &ctx));
         assert!(evaluate_condition(Some("exists(path:env.BUILD_DIR)"), &ctx));
         assert!(evaluate_condition(Some("exists(env:HOME)"), &ctx));
-        assert!(evaluate_condition(Some("missing(env:NOT_SET_FOR_TEST)"), &ctx));
+        assert!(evaluate_condition(
+            Some("missing(env:NOT_SET_FOR_TEST)"),
+            &ctx
+        ));
         assert!(evaluate_condition(Some("missing(dist)"), &ctx));
     }
 

@@ -233,7 +233,10 @@ impl ResolvedConfig {
                 .unwrap_or_else(|| DEFAULT_GIT_IMAGE.to_string()),
             recursive_checkout: file.defaults.recursive_checkout.unwrap_or(true),
             branch_allow: if file.defaults.branches.allow.is_empty() {
-                DEFAULT_BRANCHES.iter().map(|item| (*item).to_string()).collect()
+                DEFAULT_BRANCHES
+                    .iter()
+                    .map(|item| (*item).to_string())
+                    .collect()
             } else {
                 file.defaults.branches.allow.clone()
             },
@@ -327,7 +330,10 @@ impl ArtifactConfig {
                 other.paths.clone()
             },
             mode: other.mode.or(self.mode),
-            destination: other.destination.clone().or_else(|| self.destination.clone()),
+            destination: other
+                .destination
+                .clone()
+                .or_else(|| self.destination.clone()),
         }
     }
 }

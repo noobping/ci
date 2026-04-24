@@ -254,13 +254,20 @@ pub fn canonical_events(event: &str) -> Vec<String> {
     if event == "manual" {
         result.push("workflow_dispatch".to_string());
     }
-    if matches!(event, "pre-push" | "pre-receive" | "post-receive" | "update") {
+    if matches!(
+        event,
+        "pre-push" | "pre-receive" | "post-receive" | "update"
+    ) {
         result.push("push".to_string());
     }
     result
 }
 
-pub fn resolve_workflow(workflow: &Workflow, config: &ResolvedConfig, event: &str) -> ResolvedWorkflow {
+pub fn resolve_workflow(
+    workflow: &Workflow,
+    config: &ResolvedConfig,
+    event: &str,
+) -> ResolvedWorkflow {
     let local = workflow.local_override();
     let merged = config
         .hook_override(event)
@@ -368,7 +375,10 @@ pub fn explain_subject(
     branch: Option<&str>,
 ) -> Vec<String> {
     let mut lines = Vec::new();
-    let by_name: Vec<_> = workflows.iter().filter(|workflow| workflow.name == subject).collect();
+    let by_name: Vec<_> = workflows
+        .iter()
+        .filter(|workflow| workflow.name == subject)
+        .collect();
 
     if !by_name.is_empty() {
         for workflow in by_name {
@@ -475,10 +485,18 @@ fn discover_native(repo: &RepoInfo, workflows: &mut Vec<Workflow>) -> Result<()>
             continue;
         }
 
-        let file_name = path.file_name().and_then(|value| value.to_str()).unwrap_or_default();
-        let extension = path.extension().and_then(|value| value.to_str()).unwrap_or_default();
+        let file_name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
 
-        if (file_name == "workflow.yml" || file_name == "workflow.yaml") && directory_has_other_runnables(path.parent())? {
+        if (file_name == "workflow.yml" || file_name == "workflow.yaml")
+            && directory_has_other_runnables(path.parent())?
+        {
             continue;
         }
 
@@ -500,7 +518,11 @@ fn discover_native(repo: &RepoInfo, workflows: &mut Vec<Workflow>) -> Result<()>
     Ok(())
 }
 
-fn discover_actions_dir(dir: &Path, provider: ActionsProvider, workflows: &mut Vec<Workflow>) -> Result<()> {
+fn discover_actions_dir(
+    dir: &Path,
+    provider: ActionsProvider,
+    workflows: &mut Vec<Workflow>,
+) -> Result<()> {
     if !dir.exists() {
         return Ok(());
     }
@@ -511,7 +533,10 @@ fn discover_actions_dir(dir: &Path, provider: ActionsProvider, workflows: &mut V
             continue;
         }
         let path = entry.path();
-        let extension = path.extension().and_then(|value| value.to_str()).unwrap_or_default();
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
         if extension != "yml" && extension != "yaml" {
             continue;
         }
@@ -554,10 +579,7 @@ fn discover_native_yaml(base: &Path, path: &Path) -> Result<Workflow> {
         path: path.to_path_buf(),
         kind: WorkflowKind::NativeYaml,
         provider: WorkflowProvider::Native,
-        source: WorkflowSource::NativeYaml(NativeWorkflow {
-            metadata,
-            steps,
-        }),
+        source: WorkflowSource::NativeYaml(NativeWorkflow { metadata, steps }),
     })
 }
 
@@ -610,7 +632,10 @@ fn directory_has_other_runnables(dir: Option<&Path>) -> Result<bool> {
         if !path.is_file() {
             continue;
         }
-        let file_name = path.file_name().and_then(|value| value.to_str()).unwrap_or_default();
+        let file_name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
         if matches!(file_name, "workflow.yml" | "workflow.yaml") {
             continue;
         }
@@ -625,8 +650,14 @@ fn directory_has_other_runnables(dir: Option<&Path>) -> Result<bool> {
 fn workflow_name(base: &Path, path: &Path, kind: &WorkflowKind) -> String {
     let rel = path.strip_prefix(base).unwrap_or(path);
     let parent = rel.parent().unwrap_or_else(|| Path::new(""));
-    let file_stem = path.file_stem().and_then(|value| value.to_str()).unwrap_or("workflow");
-    let file_name = path.file_name().and_then(|value| value.to_str()).unwrap_or(file_stem);
+    let file_stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("workflow");
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(file_stem);
 
     let raw = match kind {
         WorkflowKind::Container => {

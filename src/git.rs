@@ -69,7 +69,10 @@ impl GitService {
     pub fn ensure_submodules(&self, repo: &RepoInfo) -> Result<()> {
         self.output
             .verbose(format!("updating submodules in {}", repo.root.display()));
-        let status = self.status_in_dir(&repo.root, &["submodule", "update", "--init", "--recursive"])?;
+        let status = self.status_in_dir(
+            &repo.root,
+            &["submodule", "update", "--init", "--recursive"],
+        )?;
         if status == 0 {
             Ok(())
         } else {
@@ -81,8 +84,10 @@ impl GitService {
     }
 
     pub fn restore_tracked_files(&self, repo: &RepoInfo) -> Result<()> {
-        self.output
-            .verbose(format!("restoring tracked files in {}", repo.root.display()));
+        self.output.verbose(format!(
+            "restoring tracked files in {}",
+            repo.root.display()
+        ));
         if self.status_in_dir(&repo.root, &["rev-parse", "--verify", "HEAD"])? != 0 {
             return Ok(());
         }
@@ -99,8 +104,10 @@ impl GitService {
     }
 
     pub fn clean_untracked_files(&self, repo: &RepoInfo, ignored: CleanIgnoredMode) -> Result<()> {
-        self.output
-            .verbose(format!("cleaning untracked files in {}", repo.root.display()));
+        self.output.verbose(format!(
+            "cleaning untracked files in {}",
+            repo.root.display()
+        ));
         let args = match ignored {
             CleanIgnoredMode::Exclude => vec!["clean", "-fd"],
             CleanIgnoredMode::Include => vec!["clean", "-fdx"],
@@ -145,9 +152,9 @@ impl GitService {
             return Ok(repo_dir);
         }
 
-        let parent = repo_dir
-            .parent()
-            .ok_or_else(|| CiError::Message("could not determine action cache parent".to_string()))?;
+        let parent = repo_dir.parent().ok_or_else(|| {
+            CiError::Message("could not determine action cache parent".to_string())
+        })?;
         let target_name = repo_dir
             .file_name()
             .and_then(|value| value.to_str())
@@ -188,7 +195,9 @@ impl GitService {
         match self.mode {
             GitMode::Host => ExecutionMode::Host,
             GitMode::Auto if command_exists("git") => ExecutionMode::Host,
-            GitMode::Auto | GitMode::Alias => ExecutionMode::Container(preferred_container_runtime()),
+            GitMode::Auto | GitMode::Alias => {
+                ExecutionMode::Container(preferred_container_runtime())
+            }
         }
     }
 
@@ -205,9 +214,7 @@ impl GitService {
         } else {
             format!(
                 "{mount_target}/{}",
-                dir.strip_prefix(parent)
-                    .unwrap_or(dir)
-                    .display()
+                dir.strip_prefix(parent).unwrap_or(dir).display()
             )
         };
         let mount = format!("{}:{mount_target}", parent.display());

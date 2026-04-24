@@ -128,7 +128,10 @@ mod tests {
         global.verbose = 1;
         global.silent = true;
 
-        assert_eq!(Output::from_globals(&global).verbosity(), Verbosity::Verbose(1));
+        assert_eq!(
+            Output::from_globals(&global).verbosity(),
+            Verbosity::Verbose(1)
+        );
     }
 
     #[test]
