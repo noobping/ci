@@ -1,0 +1,27 @@
+on:
+  - manual
+  - pre-push
+steps:
+  - if: exists(cargo)
+    run: cargo fmt --check
+  - if: missing(cargo)
+    run: toolbox run cargo fmt --check
+
+  - if: exists(cargo)
+    run: cargo clippy --all-targets -- -D warnings
+  - if: missing(cargo)
+    run: toolbox run cargo clippy --all-targets -- -D warnings
+
+  - if: exists(cargo)
+    run: cargo test --all
+  - if: missing(cargo)
+    run: toolbox run cargo test --all
+
+  - if: exists(cargo)
+    run: cargo build --release
+  - if: missing(cargo)
+    run: toolbox run cargo build --release
+
+  - uses: clean
+    cargo: false
+    ignored: false
