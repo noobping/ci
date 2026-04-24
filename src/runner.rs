@@ -15,7 +15,9 @@ use crate::artifacts::ArtifactSession;
 use crate::cli::{GlobalOptions, HookArgs, InitArgs, ListArgs, RunArgs, SelfArgs};
 use crate::config::{ContainerRuntime, ResolvedConfig};
 use crate::error::{CiError, Result};
-use crate::git::{command_exists, preferred_container_runtime, sanitize_component, GitService};
+use crate::git::{
+    command_exists, preferred_container_runtime, sanitize_component, CleanIgnoredMode, GitService,
+};
 use crate::output::Output;
 use crate::repo::RepoInfo;
 use crate::workflow::{
@@ -1005,12 +1007,29 @@ fn run_cleanup_step(
     include_ignored: Option<&str>,
 ) -> Result<()> {
     if path.is_none() && paths.is_none() {
+        let ignored = parse_cleanup_ignored_mode(include_ignored)?;
         return ctx
             .git
-            .clean_untracked_files(&ctx.repo, include_ignored.map(parse_bool).unwrap_or(false));
+            .clean_untracked_files(&ctx.repo, ignored);
     }
 
     cleanup_repo_paths(root, path, paths, missing_ok)
+}
+
+fn parse_cleanup_ignored_mode(value: Option<&str>) -> Result<CleanIgnoredMode> {
+    match value.map(str::trim).map(|value| value.to_ascii_lowercase()) {
+        None => Ok(CleanIgnoredMode::Exclude),
+        Some(value) if matches!(value.as_str(), "0" | "false" | "no" | "off") => {
+            Ok(CleanIgnoredMode::Exclude)
+        }
+        Some(value) if matches!(value.as_str(), "1" | "true" | "yes" | "on") => {
+            Ok(CleanIgnoredMode::Include)
+        }
+        Some(value) if value == "only" => Ok(CleanIgnoredMode::Only),
+        Some(value) => Err(CiError::Usage(format!(
+            "cleanup `ignored` must be one of `false`, `true`, or `only`; got `{value}`"
+        ))),
+    }
 }
 
 fn cleanup_repo_paths(
@@ -1884,7 +1903,11 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use super::{evaluate_condition, executable_exists, ExpressionContext};
+    use crate::git::CleanIgnoredMode;
+
+    use super::{
+        evaluate_condition, executable_exists, parse_cleanup_ignored_mode, ExpressionContext,
+    };
 
     fn expr_ctx<'a>(
         root: &'a Path,
@@ -1968,5 +1991,22 @@ mod tests {
         assert!(evaluate_condition(Some("exists(env:HOME)"), &ctx));
         assert!(evaluate_condition(Some("missing(env:NOT_SET_FOR_TEST)"), &ctx));
         assert!(evaluate_condition(Some("missing(dist)"), &ctx));
+    }
+
+    #[test]
+    fn cleanup_ignored_mode_parses_supported_values() {
+        assert_eq!(
+            parse_cleanup_ignored_mode(None).expect("default ignored mode"),
+            CleanIgnoredMode::Exclude
+        );
+        assert_eq!(
+            parse_cleanup_ignored_mode(Some("true")).expect("include ignored"),
+            CleanIgnoredMode::Include
+        );
+        assert_eq!(
+            parse_cleanup_ignored_mode(Some("only")).expect("ignored only"),
+            CleanIgnoredMode::Only
+        );
+        assert!(parse_cleanup_ignored_mode(Some("maybe")).is_err());
     }
 }

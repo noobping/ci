@@ -8,6 +8,13 @@ use crate::error::{CiError, Result};
 use crate::output::Output as CliOutput;
 use crate::repo::RepoInfo;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CleanIgnoredMode {
+    Exclude,
+    Include,
+    Only,
+}
+
 #[derive(Clone, Debug)]
 pub struct GitService {
     mode: GitMode,
@@ -91,13 +98,13 @@ impl GitService {
         }
     }
 
-    pub fn clean_untracked_files(&self, repo: &RepoInfo, include_ignored: bool) -> Result<()> {
+    pub fn clean_untracked_files(&self, repo: &RepoInfo, ignored: CleanIgnoredMode) -> Result<()> {
         self.output
             .verbose(format!("cleaning untracked files in {}", repo.root.display()));
-        let args = if include_ignored {
-            vec!["clean", "-fdx"]
-        } else {
-            vec!["clean", "-fd"]
+        let args = match ignored {
+            CleanIgnoredMode::Exclude => vec!["clean", "-fd"],
+            CleanIgnoredMode::Include => vec!["clean", "-fdx"],
+            CleanIgnoredMode::Only => vec!["clean", "-fdX"],
         };
         let status = self.status_in_dir(&repo.root, &args)?;
         if status == 0 {
