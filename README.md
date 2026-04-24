@@ -16,6 +16,7 @@ cargo build --release
 
 ```sh
 ci list
+ci list --porcelain
 ci run
 ci run build
 ci run --event pre-push
@@ -38,6 +39,25 @@ ci uninstall --restore
 - `clean`: export or keep recorded artifacts from managed run manifests
 - `completion`: generate shell completion scripts
 - `man`: generate `man1` pages from the current CLI
+
+## Script-friendly list output
+
+`ci list` keeps the aligned human-readable layout when writing to a terminal.
+
+When `stdout` is redirected or piped, `ci list` automatically switches to porcelain output:
+
+```sh
+ci list | cut -f1
+ci list > workflows.tsv
+```
+
+Porcelain output is tab-separated:
+
+```text
+name<TAB>provider<TAB>kind<TAB>path
+```
+
+Use `--porcelain` to force that format on a terminal, or `--no-porcelain` to keep the aligned layout even when piping or redirecting output.
 
 ## Workflow sources
 

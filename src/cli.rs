@@ -71,7 +71,29 @@ pub enum Commands {
 }
 
 #[derive(Clone, Debug, Args, Default)]
-pub struct ListArgs {}
+pub struct ListArgs {
+    #[arg(
+        long = "porcelain",
+        conflicts_with = "no_porcelain",
+        help = "Use stable tab-separated output"
+    )]
+    pub porcelain: bool,
+
+    #[arg(long = "no-porcelain", help = "Keep aligned human-readable output")]
+    pub no_porcelain: bool,
+}
+
+impl ListArgs {
+    pub fn use_porcelain(&self, stdout_is_terminal: bool) -> bool {
+        if self.porcelain {
+            true
+        } else if self.no_porcelain {
+            false
+        } else {
+            !stdout_is_terminal
+        }
+    }
+}
 
 #[derive(Clone, Debug, Args)]
 pub struct RunArgs {
@@ -267,4 +289,48 @@ fn find_command_index(argv: &[OsString]) -> Option<usize> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::{Cli, Commands, ListArgs};
+
+    #[test]
+    fn list_defaults_to_porcelain_when_stdout_is_not_a_terminal() {
+        let args = ListArgs::default();
+
+        assert!(!args.use_porcelain(true));
+        assert!(args.use_porcelain(false));
+    }
+
+    #[test]
+    fn list_porcelain_flags_override_auto_detection() {
+        let porcelain = match Cli::try_parse_from(["ci", "list", "--porcelain"]).expect("parse") {
+            Cli {
+                command: Commands::List(args),
+                ..
+            } => args,
+            _ => panic!("expected list command"),
+        };
+        assert!(porcelain.use_porcelain(true));
+        assert!(porcelain.use_porcelain(false));
+
+        let no_porcelain =
+            match Cli::try_parse_from(["ci", "list", "--no-porcelain"]).expect("parse") {
+                Cli {
+                    command: Commands::List(args),
+                    ..
+                } => args,
+                _ => panic!("expected list command"),
+            };
+        assert!(!no_porcelain.use_porcelain(true));
+        assert!(!no_porcelain.use_porcelain(false));
+    }
+
+    #[test]
+    fn list_porcelain_flags_conflict() {
+        assert!(Cli::try_parse_from(["ci", "list", "--porcelain", "--no-porcelain"]).is_err());
+    }
 }

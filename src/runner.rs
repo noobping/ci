@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs::{self, OpenOptions};
+use std::io::IsTerminal;
 use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
@@ -147,24 +148,37 @@ struct BuiltinStepState<'a> {
     cache_state: &'a mut CacheState,
 }
 
-pub fn cmd_list(ctx: &AppContext, _args: &ListArgs) -> Result<i32> {
+pub fn cmd_list(ctx: &AppContext, args: &ListArgs) -> Result<i32> {
+    let porcelain = args.use_porcelain(std::io::stdout().is_terminal());
     let workflows = workflow::discover_all(&ctx.repo)?;
     if workflows.is_empty() {
-        ctx.output.info(format!(
-            "No workflows found in {}",
-            ctx.repo.ci_dir.display()
-        ));
+        if !porcelain {
+            ctx.output.info(format!(
+                "No workflows found in {}",
+                ctx.repo.ci_dir.display()
+            ));
+        }
         return Ok(0);
     }
 
     for item in workflows {
-        println!(
-            "{:<28} {:<15} {:<12} {}",
-            item.name,
-            provider_name(&item.provider),
-            kind_name(&item.kind),
-            item.path.display()
-        );
+        if porcelain {
+            println!(
+                "{}\t{}\t{}\t{}",
+                item.name,
+                provider_name(&item.provider),
+                kind_name(&item.kind),
+                item.path.display()
+            );
+        } else {
+            println!(
+                "{:<28} {:<15} {:<12} {}",
+                item.name,
+                provider_name(&item.provider),
+                kind_name(&item.kind),
+                item.path.display()
+            );
+        }
     }
 
     Ok(0)
