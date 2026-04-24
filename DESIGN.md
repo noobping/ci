@@ -1,6 +1,40 @@
 
 # Design
 
+## Notes
+
+help me with this idea.
+
+make a rust programm called ci. it is a cli tool that can link (to the installed location of itself) or copy itself into a bare git repo or local git repo. that way it can run the workflows in the .ci folder. so, this ci tool is a ci pipeline. it is compettable with all git hooks. if it talks like a duck, it's a duck. make it a propper linux/unix tool with clear flags. so that it is user frendly. also, how do i update and remove the ci tool from a git repo?
+
+a workflow can be a executable (like a script) or a yml file or a containerfile/dockerfile. it can be in the .ci dir or in a subdir. like project/.ci/workflowname/Containerfile
+
+add the help, verbose, silent flags. try to build the rust ci app with the ci app.
+
+is there anything else you can add or make it more clear?
+
+---------
+
+make a rust programm called ci. it is a cli tool that can link (to the installed location of itself) or copy itself into a bare git repo or local git repo. that way it can run the workflows in the .ci folder. so, this ci tool is a ci pipeline. it is compettable with all git hooks. if it talks like a duck, it's a duck. make it a propper linux/unix tool with clear flags. so that it is user frendly. also, how do i update and remove the ci tool from a git repo?
+
+a workflow can be a executable (like a script) or a yml file or a containerfile/dockerfile. it can be in the .ci dir or in a subdir. like project/.ci/workflowname/Containerfile
+
+if git is not installed thwn use a container with git. like as alias for git.
+
+you can configure this in the config or with flags. git mode host, auto and alias. alias uses a container with git. by default from dockerhub.
+
+by default, work only on main, master, develop and development branches. this can be set in workflows, config and flags
+
+recursive checkout (for subrepos) by default
+
+add support for github / gitea actions
+
+support artifacts. so that the project can be cleaned. the artifects are kept or moved/renamed. you may call this the clean option with keep and move
+
+use podman multi arch support (optional)
+
+## Idea
+
 The idea: **a tiny self-installing CI runner that behaves like Git hooks when placed inside a repo**.
 
 > `ci` can be installed once, then linked or copied into a repo’s Git hook system.
