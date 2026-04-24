@@ -1,0 +1,14 @@
+[package]
+name = "ci"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "A tiny Git-native CI runner that installs itself into Git hooks."
+repository = "https://example.invalid/ci"
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
+
+[dependencies]

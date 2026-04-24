@@ -1,0 +1,13 @@
+name: build
+on:
+  - manual
+  - pre-push
+steps:
+  - name: Format
+    run: cargo fmt --check
+  - name: Lint
+    run: cargo clippy --all-targets -- -D warnings
+  - name: Test
+    run: cargo test --all
+  - name: Build
+    run: cargo build --release
