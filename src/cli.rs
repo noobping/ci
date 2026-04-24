@@ -238,7 +238,7 @@ pub fn rewrite_argv(mut argv: Vec<OsString>) -> Vec<OsString> {
     }
 
     if let Some(index) = find_command_index(&argv) {
-        if argv[index] == OsString::from("doctor") {
+        if argv[index] == "doctor" {
             argv[index] = OsString::from("status");
         }
     }
@@ -248,7 +248,7 @@ pub fn rewrite_argv(mut argv: Vec<OsString>) -> Vec<OsString> {
 
 pub fn doctor_alias_used(argv: &[OsString]) -> bool {
     find_command_index(argv)
-        .map(|index| argv[index] == OsString::from("doctor"))
+        .map(|index| argv[index] == "doctor")
         .unwrap_or(false)
 }
 

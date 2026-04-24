@@ -330,15 +330,13 @@ fn reject_unsupported_workflow(path: &Path, raw: &RawActionsWorkflow) -> Result<
         )));
     }
 
-    if let Some(on_value) = raw.on_value.as_ref() {
-        if let Value::Mapping(map) = on_value {
-            for key in map.keys() {
-                if scalar_to_string(key).as_deref() == Some("workflow_call") {
-                    return Err(CiError::Message(format!(
-                        "{} uses `workflow_call`, which is not supported",
-                        path.display()
-                    )));
-                }
+    if let Some(Value::Mapping(map)) = raw.on_value.as_ref() {
+        for key in map.keys() {
+            if scalar_to_string(key).as_deref() == Some("workflow_call") {
+                return Err(CiError::Message(format!(
+                    "{} uses `workflow_call`, which is not supported",
+                    path.display()
+                )));
             }
         }
     }

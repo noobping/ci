@@ -111,6 +111,36 @@ struct PendingCache {
     paths: Vec<String>,
 }
 
+#[derive(Clone, Copy)]
+struct StepStatus {
+    success: bool,
+    previous_failed: bool,
+}
+
+struct ActionsJobExecution<'a> {
+    workflow: &'a ActionsWorkflow,
+    resolved: &'a ResolvedWorkflow,
+    job: &'a ActionsJob,
+    matrix: &'a BTreeMap<String, String>,
+    base_env: &'a BTreeMap<String, String>,
+    backend: Option<&'a ContainerBackend>,
+    artifacts: &'a mut ArtifactSession,
+    cache_state: &'a mut CacheState,
+}
+
+struct BuiltinStepInvocation<'a, 'b> {
+    workflow_name: &'a str,
+    default_name: &'a str,
+    uses: &'a str,
+    with: &'a BTreeMap<String, String>,
+    expr: &'b ExpressionContext<'b>,
+}
+
+struct BuiltinStepState<'a> {
+    artifacts: &'a mut ArtifactSession,
+    cache_state: &'a mut CacheState,
+}
+
 pub fn cmd_list(ctx: &AppContext, _args: &ListArgs) -> Result<i32> {
     let workflows = workflow::discover_all(&ctx.repo)?;
     if workflows.is_empty() {
@@ -439,16 +469,18 @@ fn run_native_uses_step(
         .uses
         .as_deref()
         .ok_or_else(|| CiError::Message(format!("{} native step is missing `uses`", resolved.path.display())))?;
-    run_builtin_step(
-        ctx,
-        &resolved.name,
+    let invocation = BuiltinStepInvocation {
+        workflow_name: &resolved.name,
         default_name,
         uses,
-        &step.with,
+        with: &step.with,
         expr,
+    };
+    let mut state = BuiltinStepState {
         artifacts,
         cache_state,
-    )?
+    };
+    run_builtin_step(ctx, &invocation, &mut state)?
     .ok_or_else(|| {
         CiError::Message(format!(
             "{} uses unsupported native built-in `{uses}`",
@@ -475,16 +507,16 @@ fn run_container_workflow(
         return Ok(build_status);
     }
 
-    backend.run_shell(
-        &tag,
-        &ctx.repo.root,
-        &ctx.config.defaults.shell,
-        "true",
+    backend.run_shell(&ContainerShellSpec {
+        image: &tag,
+        repo_root: &ctx.repo.root,
+        shell: &ctx.config.defaults.shell,
+        script: "true",
         env,
-        &ctx.repo.root,
-        resolved.container.platform.as_deref(),
-        None,
-    )
+        workdir: &ctx.repo.root,
+        platform: resolved.container.platform.as_deref(),
+        options: None,
+    })
 }
 
 fn run_actions_workflow(
@@ -538,17 +570,17 @@ fn run_actions_workflow(
                 }
             }
 
-            let status = run_actions_job(
-                ctx,
+            let mut execution = ActionsJobExecution {
                 workflow,
                 resolved,
-                &job,
-                &matrix,
+                job: &job,
+                matrix: &matrix,
                 base_env,
-                backend.as_ref(),
+                backend: backend.as_ref(),
                 artifacts,
-                &mut cache_state,
-            )?;
+                cache_state: &mut cache_state,
+            };
+            let status = run_actions_job(ctx, &mut execution)?;
 
             if let Some(backend) = &backend {
                 for service in services {
@@ -568,58 +600,29 @@ fn run_actions_workflow(
     Ok(0)
 }
 
-fn run_actions_job(
-    ctx: &AppContext,
-    workflow: &ActionsWorkflow,
-    resolved: &ResolvedWorkflow,
-    job: &ActionsJob,
-    matrix: &BTreeMap<String, String>,
-    base_env: &BTreeMap<String, String>,
-    backend: Option<&ContainerBackend>,
-    artifacts: &mut ArtifactSession,
-    cache_state: &mut CacheState,
-) -> Result<i32> {
+fn run_actions_job(ctx: &AppContext, execution: &mut ActionsJobExecution<'_>) -> Result<i32> {
     let mut success = true;
     let mut previous_failed = false;
-    for step in &job.steps {
+    for step in &execution.job.steps {
+        let status = StepStatus {
+            success,
+            previous_failed,
+        };
         match step {
             ActionStep::Run(step) => {
-                let status = run_actions_run_step(
-                    ctx,
-                    workflow,
-                    resolved,
-                    job,
-                    matrix,
-                    base_env,
-                    backend,
-                    step,
-                    success,
-                    previous_failed,
-                )?;
-                success = status == 0;
-                previous_failed = status != 0;
-                if status != 0 && !step.continue_on_error {
-                    return Ok(status);
+                let exit_code = run_actions_run_step(ctx, execution, step, status)?;
+                success = exit_code == 0;
+                previous_failed = exit_code != 0;
+                if exit_code != 0 && !step.continue_on_error {
+                    return Ok(exit_code);
                 }
             }
             ActionStep::Uses(step) => {
-                let status = run_actions_uses_step(
-                    ctx,
-                    workflow,
-                    job,
-                    matrix,
-                    base_env,
-                    backend,
-                    step,
-                    success,
-                    previous_failed,
-                    artifacts,
-                    cache_state,
-                )?;
-                success = status == 0;
-                previous_failed = status != 0;
-                if status != 0 && !step.continue_on_error {
-                    return Ok(status);
+                let exit_code = run_actions_uses_step(ctx, execution, step, status)?;
+                success = exit_code == 0;
+                previous_failed = exit_code != 0;
+                if exit_code != 0 && !step.continue_on_error {
+                    return Ok(exit_code);
                 }
             }
         }
@@ -627,35 +630,32 @@ fn run_actions_job(
     Ok(0)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn run_actions_run_step(
     ctx: &AppContext,
-    workflow: &ActionsWorkflow,
-    resolved: &ResolvedWorkflow,
-    job: &ActionsJob,
-    matrix: &BTreeMap<String, String>,
-    base_env: &BTreeMap<String, String>,
-    backend: Option<&ContainerBackend>,
+    execution: &ActionsJobExecution<'_>,
     step: &ActionRunStep,
-    success: bool,
-    previous_failed: bool,
+    status: StepStatus,
 ) -> Result<i32> {
     ctx.output.info(format!("--> {}", step.name));
     let empty_inputs = BTreeMap::new();
     let merged = merged_env(
-        &merged_env(base_env, &workflow.env, &job.env),
-        &resolved.env,
+        &merged_env(execution.base_env, &execution.workflow.env, &execution.job.env),
+        &execution.resolved.env,
         &step.env,
     );
     let expr = ExpressionContext {
-        event: base_env.get("CI_EVENT").map(String::as_str).unwrap_or("manual"),
-        branch: base_env.get("CI_BRANCH").map(String::as_str),
+        event: execution
+            .base_env
+            .get("CI_EVENT")
+            .map(String::as_str)
+            .unwrap_or("manual"),
+        branch: execution.base_env.get("CI_BRANCH").map(String::as_str),
         root: &ctx.repo.root,
         env: &merged,
-        matrix,
+        matrix: execution.matrix,
         inputs: &empty_inputs,
-        success,
-        previous_failed,
+        success: status.success,
+        previous_failed: status.previous_failed,
     };
     if !evaluate_condition(step.if_condition.as_deref(), &expr) {
         ctx.output
@@ -666,8 +666,8 @@ fn run_actions_run_step(
     let shell = step
         .shell
         .as_deref()
-        .or(job.defaults.shell.as_deref())
-        .or(workflow.defaults.shell.as_deref())
+        .or(execution.job.defaults.shell.as_deref())
+        .or(execution.workflow.defaults.shell.as_deref())
         .unwrap_or(&ctx.config.defaults.shell);
     let script = interpolate_expressions(&step.run, &expr);
     let workdir = resolve_workdir(
@@ -675,98 +675,110 @@ fn run_actions_run_step(
         step.working_directory
             .as_deref()
             .map(Path::new)
-            .or_else(|| job.defaults.working_directory.as_deref().map(Path::new))
-            .or_else(|| workflow.defaults.working_directory.as_deref().map(Path::new))
-            .or(resolved.execution.workspace.as_deref()),
+            .or_else(|| execution.job.defaults.working_directory.as_deref().map(Path::new))
+            .or_else(|| execution.workflow.defaults.working_directory.as_deref().map(Path::new))
+            .or(execution.resolved.execution.workspace.as_deref()),
     );
 
-    if let Some(container) = job.container.as_ref() {
-        backend
+    if let Some(container) = execution.job.container.as_ref() {
+        execution
+            .backend
             .ok_or_else(|| CiError::Message("container runtime was not initialised".to_string()))?
-            .run_shell(
-                &container.image,
-                &ctx.repo.root,
+            .run_shell(&ContainerShellSpec {
+                image: &container.image,
+                repo_root: &ctx.repo.root,
                 shell,
-                &script,
-                &merged,
-                &workdir,
-                resolved.container.platform.as_deref(),
-                container.options.as_deref(),
-            )
+                script: &script,
+                env: &merged,
+                workdir: &workdir,
+                platform: execution.resolved.container.platform.as_deref(),
+                options: container.options.as_deref(),
+            })
     } else {
         run_shell(shell, &script, &workdir, &merged)
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn run_actions_uses_step(
     ctx: &AppContext,
-    workflow: &ActionsWorkflow,
-    job: &ActionsJob,
-    matrix: &BTreeMap<String, String>,
-    base_env: &BTreeMap<String, String>,
-    backend: Option<&ContainerBackend>,
+    execution: &mut ActionsJobExecution<'_>,
     step: &ActionUsesStep,
-    success: bool,
-    previous_failed: bool,
-    artifacts: &mut ArtifactSession,
-    cache_state: &mut CacheState,
+    status: StepStatus,
 ) -> Result<i32> {
     ctx.output.info(format!("--> {}", step.name));
     let empty_env = BTreeMap::new();
-    let merged = merged_env(&merged_env(base_env, &workflow.env, &job.env), &empty_env, &step.env);
+    let merged = merged_env(
+        &merged_env(execution.base_env, &execution.workflow.env, &execution.job.env),
+        &empty_env,
+        &step.env,
+    );
     let expr = ExpressionContext {
-        event: base_env.get("CI_EVENT").map(String::as_str).unwrap_or("manual"),
-        branch: base_env.get("CI_BRANCH").map(String::as_str),
+        event: execution
+            .base_env
+            .get("CI_EVENT")
+            .map(String::as_str)
+            .unwrap_or("manual"),
+        branch: execution.base_env.get("CI_BRANCH").map(String::as_str),
         root: &ctx.repo.root,
         env: &merged,
-        matrix,
+        matrix: execution.matrix,
         inputs: &step.with,
-        success,
-        previous_failed,
+        success: status.success,
+        previous_failed: status.previous_failed,
     };
     if !evaluate_condition(step.if_condition.as_deref(), &expr) {
         return Ok(0);
     }
 
-    if let Some(status) = run_builtin_step(
-        ctx,
-        &workflow.name,
-        &step.name,
-        &step.uses,
-        &step.with,
-        &expr,
-        artifacts,
-        cache_state,
-    )? {
-        return Ok(status);
+    let invocation = BuiltinStepInvocation {
+        workflow_name: &execution.workflow.name,
+        default_name: &step.name,
+        uses: &step.uses,
+        with: &step.with,
+        expr: &expr,
+    };
+    let mut state = BuiltinStepState {
+        artifacts: execution.artifacts,
+        cache_state: execution.cache_state,
+    };
+    if let Some(exit_code) = run_builtin_step(ctx, &invocation, &mut state)? {
+        return Ok(exit_code);
     }
 
     if step.uses.starts_with("docker://") {
         let image = step.uses.trim_start_matches("docker://");
-        return backend
+        return execution
+            .backend
             .ok_or_else(|| CiError::Message("docker actions require a container runtime".to_string()))?
-            .run_shell(
+            .run_shell(&ContainerShellSpec {
                 image,
-                &ctx.repo.root,
-                &ctx.config.defaults.shell,
-                "true",
-                &merged,
-                &ctx.repo.root,
-                None,
-                None,
-            );
+                repo_root: &ctx.repo.root,
+                shell: &ctx.config.defaults.shell,
+                script: "true",
+                env: &merged,
+                workdir: &ctx.repo.root,
+                platform: None,
+                options: None,
+            });
     }
 
     if step.uses.starts_with("./") {
         let dir = ctx.repo.root.join(step.uses.trim_start_matches("./"));
-        return run_local_action(ctx, workflow, matrix, &merged, backend, &dir, &step.with);
+        return run_local_action(
+            ctx,
+            execution.workflow,
+            execution.matrix,
+            &merged,
+            execution.backend,
+            &dir,
+            &step.with,
+        );
     }
 
     let remote = parse_remote_action(&step.uses)?;
     let repo = ctx.git.clone_action_repo(
         &ctx.repo.actions_cache,
-        workflow.remote_base(),
+        execution.workflow.remote_base(),
         &remote.owner,
         &remote.repo,
         &remote.reference,
@@ -776,22 +788,24 @@ fn run_actions_uses_step(
     } else {
         repo.join(remote.subpath)
     };
-    run_local_action(ctx, workflow, matrix, &merged, backend, &dir, &step.with)
+    run_local_action(
+        ctx,
+        execution.workflow,
+        execution.matrix,
+        &merged,
+        execution.backend,
+        &dir,
+        &step.with,
+    )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn run_builtin_step(
     ctx: &AppContext,
-    workflow_name: &str,
-    default_name: &str,
-    uses: &str,
-    with: &BTreeMap<String, String>,
-    expr: &ExpressionContext<'_>,
-    artifacts: &mut ArtifactSession,
-    cache_state: &mut CacheState,
+    invocation: &BuiltinStepInvocation<'_, '_>,
+    state: &mut BuiltinStepState<'_>,
 ) -> Result<Option<i32>> {
-    let normalized = strip_action_ref(uses).to_lowercase();
-    let rendered_with = interpolate_map(with, expr);
+    let normalized = strip_action_ref(invocation.uses).to_lowercase();
+    let rendered_with = interpolate_map(invocation.with, invocation.expr);
 
     match normalized.as_str() {
         "checkout" | "actions/checkout" => {
@@ -816,36 +830,38 @@ fn run_builtin_step(
                 .unwrap_or_else(|| "default".to_string());
             let paths = parse_path_list(rendered_with.get("path").map(String::as_str).unwrap_or(""));
             restore_cache(ctx, &key, &paths)?;
-            cache_state.pending.push(PendingCache { key, paths });
+            state.cache_state.pending.push(PendingCache { key, paths });
             Ok(Some(0))
         }
         "upload-artifact" | "actions/upload-artifact" => {
             let name = rendered_with
                 .get("name")
                 .cloned()
-                .unwrap_or_else(|| default_name.to_string());
+                .unwrap_or_else(|| invocation.default_name.to_string());
             let paths = parse_path_list(rendered_with.get("path").map(String::as_str).unwrap_or(""));
-            let _ = artifacts.upload_named_artifact(workflow_name, &name, &paths, false)?;
+            let _ = state
+                .artifacts
+                .upload_named_artifact(invocation.workflow_name, &name, &paths, false)?;
             Ok(Some(0))
         }
         "download-artifact" | "actions/download-artifact" => {
             let name = rendered_with
                 .get("name")
                 .cloned()
-                .unwrap_or_else(|| default_name.to_string());
+                .unwrap_or_else(|| invocation.default_name.to_string());
             let dest = resolve_workdir(
-                expr.root,
+                invocation.expr.root,
                 Some(Path::new(
                     rendered_with.get("path").map(String::as_str).unwrap_or("."),
                 )),
             );
-            let _ = artifacts.download_named_artifact(&name, &dest, false)?;
+            let _ = state.artifacts.download_named_artifact(&name, &dest, false)?;
             Ok(Some(0))
         }
         "cleanup" | "ci/cleanup" => {
             run_cleanup_step(
                 ctx,
-                expr.root,
+                invocation.expr.root,
                 rendered_with.get("path").map(String::as_str),
                 rendered_with.get("paths").map(String::as_str),
                 rendered_with
@@ -969,16 +985,21 @@ fn run_local_action(
             } else {
                 let backend = backend
                     .ok_or_else(|| CiError::Message("js actions require node or a container runtime".to_string()))?;
-                backend.run_shell(
-                    &ctx.config.defaults.node_image,
-                    dir,
-                    &ctx.config.defaults.shell,
-                    &format!("node {}", path.file_name().and_then(|value| value.to_str()).unwrap_or("index.js")),
-                    base_env,
-                    dir,
-                    None,
-                    None,
-                )
+                backend.run_shell(&ContainerShellSpec {
+                    image: &ctx.config.defaults.node_image,
+                    repo_root: dir,
+                    shell: &ctx.config.defaults.shell,
+                    script: &format!(
+                        "node {}",
+                        path.file_name()
+                            .and_then(|value| value.to_str())
+                            .unwrap_or("index.js")
+                    ),
+                    env: base_env,
+                    workdir: dir,
+                    platform: None,
+                    options: None,
+                })
             }
         }
     }
@@ -1242,6 +1263,7 @@ impl RunLock {
             .create(true)
             .read(true)
             .write(true)
+            .truncate(false)
             .open(path)?;
         file.try_lock_exclusive()
             .map_err(|_| CiError::Message(format!("another `ci` run is active ({})", path.display())))?;
@@ -1253,6 +1275,17 @@ impl Drop for RunLock {
     fn drop(&mut self) {
         let _ = self.file.unlock();
     }
+}
+
+struct ContainerShellSpec<'a> {
+    image: &'a str,
+    repo_root: &'a Path,
+    shell: &'a str,
+    script: &'a str,
+    env: &'a BTreeMap<String, String>,
+    workdir: &'a Path,
+    platform: Option<&'a str>,
+    options: Option<&'a str>,
 }
 
 struct ContainerBackend {
@@ -1298,20 +1331,9 @@ impl ContainerBackend {
         Ok(command.status()?.code().unwrap_or(1))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn run_shell(
-        &self,
-        image: &str,
-        repo_root: &Path,
-        shell: &str,
-        script: &str,
-        env: &BTreeMap<String, String>,
-        workdir: &Path,
-        platform: Option<&str>,
-        options: Option<&str>,
-    ) -> Result<i32> {
-        let mount = format!("{}:/work", repo_root.display());
-        let container_workdir = if let Ok(relative) = workdir.strip_prefix(repo_root) {
+    fn run_shell(&self, spec: &ContainerShellSpec<'_>) -> Result<i32> {
+        let mount = format!("{}:/work", spec.repo_root.display());
+        let container_workdir = if let Ok(relative) = spec.workdir.strip_prefix(spec.repo_root) {
             if relative.as_os_str().is_empty() {
                 "/work".to_string()
             } else {
@@ -1331,22 +1353,22 @@ impl ContainerBackend {
             .arg(mount)
             .arg("-w")
             .arg(container_workdir);
-        if let Some(platform) = platform {
+        if let Some(platform) = spec.platform {
             command.arg("--platform").arg(platform);
         }
-        if let Some(options) = options {
+        if let Some(options) = spec.options {
             for part in options.split_whitespace() {
                 command.arg(part);
             }
         }
-        for (key, value) in env {
+        for (key, value) in spec.env {
             command.arg("-e").arg(format!("{key}={value}"));
         }
         command
-            .arg(image)
-            .arg(shell)
+            .arg(spec.image)
+            .arg(spec.shell)
             .arg("-lc")
-            .arg(script)
+            .arg(spec.script)
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());

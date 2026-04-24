@@ -93,7 +93,12 @@ pub fn cmd_status(ctx: &AppContext, _args: &StatusArgs) -> crate::error::Result<
     println!("OK   recorded runs: {}", manifests.len());
 
     let lock_status = if lock_path.exists() {
-        let file = OpenOptions::new().read(true).write(true).create(true).open(&lock_path)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)?;
         match file.try_lock_exclusive() {
             Ok(()) => {
                 let _ = file.unlock();
