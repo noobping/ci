@@ -124,6 +124,20 @@ impl GitService {
         }
     }
 
+    pub fn fetch_prune(&self, repo: &RepoInfo) -> Result<()> {
+        self.output
+            .verbose(format!("pruning remote refs in {}", repo.root.display()));
+        let status = self.status_in_dir(&repo.root, &["fetch", "--all", "--prune"])?;
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(CiError::Message(format!(
+                "git fetch --all --prune failed in {} with exit code {status}",
+                repo.root.display()
+            )))
+        }
+    }
+
     pub fn current_branch(&self, repo: &RepoInfo) -> Result<Option<String>> {
         let branch = self.output_in_dir(&repo.root, &["rev-parse", "--abbrev-ref", "HEAD"])?;
         if branch == "HEAD" {

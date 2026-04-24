@@ -135,6 +135,10 @@ struct BuiltinStepInvocation<'a, 'b> {
     default_name: &'a str,
     uses: &'a str,
     with: &'a BTreeMap<String, String>,
+    extra: Option<&'a BTreeMap<String, String>>,
+    inline_run: Option<String>,
+    shell: Option<String>,
+    workdir: Option<PathBuf>,
     expr: &'b ExpressionContext<'b>,
 }
 
@@ -441,7 +445,17 @@ fn run_native_yaml(
             continue;
         }
 
-        let status = if let Some(run) = step.run.as_deref() {
+        let status = if step.uses.is_some() {
+            run_native_uses_step(
+                ctx,
+                resolved,
+                step,
+                step_name,
+                &expr,
+                artifacts,
+                &mut cache_state,
+            )?
+        } else if let Some(run) = step.run.as_deref() {
             let shell = step
                 .shell
                 .as_deref()
@@ -461,15 +475,10 @@ fn run_native_yaml(
                 &condition_env,
             )?
         } else {
-            run_native_uses_step(
-                ctx,
-                resolved,
-                step,
-                step_name,
-                &expr,
-                artifacts,
-                &mut cache_state,
-            )?
+            return Err(CiError::Message(format!(
+                "{} native step is missing `run` and `uses`",
+                resolved.path.display()
+            )));
         };
         previous_failed = status != 0;
         if status != 0 && !step.continue_on_error && workflow_failure == 0 {
@@ -500,6 +509,22 @@ fn run_native_uses_step(
         default_name,
         uses,
         with: &step.with,
+        extra: Some(&step.extra),
+        inline_run: step.run.clone(),
+        shell: Some(
+            step.shell
+                .as_deref()
+                .or(resolved.execution.shell.as_deref())
+                .unwrap_or(&ctx.config.defaults.shell)
+                .to_string(),
+        ),
+        workdir: Some(resolve_workdir(
+            &ctx.repo.root,
+            step.working_directory
+                .as_deref()
+                .map(Path::new)
+                .or(resolved.execution.workspace.as_deref()),
+        )),
         expr,
     };
     let mut state = BuiltinStepState {
@@ -788,6 +813,39 @@ fn run_actions_uses_step(
         default_name: &step.name,
         uses: &step.uses,
         with: &step.with,
+        extra: None,
+        inline_run: None,
+        shell: Some(
+            step.shell
+                .as_deref()
+                .or(execution.job.defaults.shell.as_deref())
+                .or(execution.workflow.defaults.shell.as_deref())
+                .unwrap_or(&ctx.config.defaults.shell)
+                .to_string(),
+        ),
+        workdir: Some(resolve_workdir(
+            &ctx.repo.root,
+            step.working_directory
+                .as_deref()
+                .map(Path::new)
+                .or_else(|| {
+                    execution
+                        .job
+                        .defaults
+                        .working_directory
+                        .as_deref()
+                        .map(Path::new)
+                })
+                .or_else(|| {
+                    execution
+                        .workflow
+                        .defaults
+                        .working_directory
+                        .as_deref()
+                        .map(Path::new)
+                })
+                .or(execution.resolved.execution.workspace.as_deref()),
+        )),
         expr: &expr,
     };
     let mut state = BuiltinStepState {
@@ -860,7 +918,11 @@ fn run_builtin_step(
     state: &mut BuiltinStepState<'_>,
 ) -> Result<Option<i32>> {
     let normalized = strip_action_ref(invocation.uses).to_lowercase();
-    let rendered_with = interpolate_map(invocation.with, invocation.expr);
+    let mut rendered_with = invocation
+        .extra
+        .map(|extra| interpolate_map(extra, invocation.expr))
+        .unwrap_or_default();
+    rendered_with.extend(interpolate_map(invocation.with, invocation.expr));
 
     match normalized.as_str() {
         "checkout" | "actions/checkout" => {
@@ -920,24 +982,33 @@ fn run_builtin_step(
                 .download_named_artifact(&name, &dest, false)?;
             Ok(Some(0))
         }
-        "cleanup" | "ci/cleanup" => {
-            run_cleanup_step(
-                ctx,
-                invocation.expr.root,
-                rendered_with.get("path").map(String::as_str),
-                rendered_with.get("paths").map(String::as_str),
-                rendered_with
-                    .get("missing-ok")
-                    .or_else(|| rendered_with.get("missing_ok"))
-                    .map(String::as_str),
-                rendered_with
-                    .get("ignored")
-                    .or_else(|| rendered_with.get("include-ignored"))
-                    .or_else(|| rendered_with.get("include_ignored"))
-                    .map(String::as_str),
-            )?;
-            Ok(Some(0))
-        }
+        "clean" | "ci/clean" => Ok(Some(run_clean_step(
+            ctx,
+            invocation.expr.root,
+            &rendered_with,
+            invocation.inline_run.as_deref(),
+            invocation
+                .shell
+                .as_deref()
+                .unwrap_or(&ctx.config.defaults.shell),
+            invocation.workdir.as_deref().unwrap_or(invocation.expr.root),
+            invocation.expr,
+        )?)),
+        "cleanup" | "ci/cleanup" => Ok(Some(run_cleanup_step(
+            ctx,
+            invocation.expr.root,
+            rendered_with.get("path").map(String::as_str),
+            rendered_with.get("paths").map(String::as_str),
+            rendered_with
+                .get("missing-ok")
+                .or_else(|| rendered_with.get("missing_ok"))
+                .map(String::as_str),
+            rendered_with
+                .get("ignored")
+                .or_else(|| rendered_with.get("include-ignored"))
+                .or_else(|| rendered_with.get("include_ignored"))
+                .map(String::as_str),
+        )?)),
         _ => Ok(None),
     }
 }
@@ -1100,16 +1171,81 @@ fn run_cleanup_step(
     paths: Option<&str>,
     missing_ok: Option<&str>,
     include_ignored: Option<&str>,
-) -> Result<()> {
+) -> Result<i32> {
     if path.is_none() && paths.is_none() {
-        let ignored = parse_cleanup_ignored_mode(include_ignored)?;
-        return ctx.git.clean_untracked_files(&ctx.repo, ignored);
+        let ignored = parse_cleanup_ignored_mode("cleanup", include_ignored)?;
+        ctx.git.clean_untracked_files(&ctx.repo, ignored)?;
+        return Ok(0);
     }
 
-    cleanup_repo_paths(root, path, paths, missing_ok)
+    cleanup_repo_paths(root, path, paths, missing_ok)?;
+    Ok(0)
 }
 
-fn parse_cleanup_ignored_mode(value: Option<&str>) -> Result<CleanIgnoredMode> {
+fn run_clean_step(
+    ctx: &AppContext,
+    root: &Path,
+    rendered_with: &BTreeMap<String, String>,
+    inline_run: Option<&str>,
+    shell: &str,
+    workdir: &Path,
+    expr: &ExpressionContext<'_>,
+) -> Result<i32> {
+    if rendered_with
+        .get("purge")
+        .map(|value| parse_bool(value))
+        .unwrap_or(false)
+    {
+        ctx.git.fetch_prune(&ctx.repo)?;
+    }
+
+    let ignored = parse_cleanup_ignored_mode(
+        "clean",
+        rendered_with
+            .get("ignored")
+            .or_else(|| rendered_with.get("include-ignored"))
+            .or_else(|| rendered_with.get("include_ignored"))
+            .map(String::as_str),
+    )?;
+    ctx.git.clean_untracked_files(&ctx.repo, ignored)?;
+
+    if rendered_with
+        .get("cargo")
+        .map(|value| parse_bool(value))
+        .unwrap_or(false)
+    {
+        let status = run_shell(shell, "cargo clean", workdir, expr.env)?;
+        if status != 0 {
+            return Ok(status);
+        }
+    }
+
+    let path = rendered_with.get("path").map(String::as_str);
+    let paths = rendered_with.get("paths").map(String::as_str);
+    if path.is_some() || paths.is_some() {
+        cleanup_repo_paths(
+            root,
+            path,
+            paths,
+            rendered_with
+                .get("missing-ok")
+                .or_else(|| rendered_with.get("missing_ok"))
+                .map(String::as_str),
+        )?;
+    }
+
+    if let Some(script) = inline_run {
+        let script = interpolate_expressions(script, expr);
+        let status = run_shell(shell, &script, workdir, expr.env)?;
+        if status != 0 {
+            return Ok(status);
+        }
+    }
+
+    Ok(0)
+}
+
+fn parse_cleanup_ignored_mode(step_name: &str, value: Option<&str>) -> Result<CleanIgnoredMode> {
     match value.map(str::trim).map(|value| value.to_ascii_lowercase()) {
         None => Ok(CleanIgnoredMode::Exclude),
         Some(value) if matches!(value.as_str(), "0" | "false" | "no" | "off") => {
@@ -1120,7 +1256,7 @@ fn parse_cleanup_ignored_mode(value: Option<&str>) -> Result<CleanIgnoredMode> {
         }
         Some(value) if value == "only" => Ok(CleanIgnoredMode::Only),
         Some(value) => Err(CiError::Usage(format!(
-            "cleanup `ignored` must be one of `false`, `true`, or `only`; got `{value}`"
+            "{step_name} `ignored` must be one of `false`, `true`, or `only`; got `{value}`"
         ))),
     }
 }
@@ -2170,17 +2306,17 @@ mod tests {
     #[test]
     fn cleanup_ignored_mode_parses_supported_values() {
         assert_eq!(
-            parse_cleanup_ignored_mode(None).expect("default ignored mode"),
+            parse_cleanup_ignored_mode("cleanup", None).expect("default ignored mode"),
             CleanIgnoredMode::Exclude
         );
         assert_eq!(
-            parse_cleanup_ignored_mode(Some("true")).expect("include ignored"),
+            parse_cleanup_ignored_mode("cleanup", Some("true")).expect("include ignored"),
             CleanIgnoredMode::Include
         );
         assert_eq!(
-            parse_cleanup_ignored_mode(Some("only")).expect("ignored only"),
+            parse_cleanup_ignored_mode("cleanup", Some("only")).expect("ignored only"),
             CleanIgnoredMode::Only
         );
-        assert!(parse_cleanup_ignored_mode(Some("maybe")).is_err());
+        assert!(parse_cleanup_ignored_mode("cleanup", Some("maybe")).is_err());
     }
 }

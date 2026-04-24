@@ -105,6 +105,7 @@ pub struct NativeStep {
     pub run: Option<String>,
     pub uses: Option<String>,
     pub with: BTreeMap<String, String>,
+    pub extra: BTreeMap<String, String>,
     pub shell: Option<String>,
     pub env: BTreeMap<String, String>,
     pub if_condition: Option<String>,
@@ -115,6 +116,16 @@ pub struct NativeStep {
 
 impl NativeStep {
     fn validate(self, workflow_path: &Path, index: usize) -> Result<Self> {
+        if self.run.is_some()
+            && self
+                .uses
+                .as_deref()
+                .map(is_native_inline_clean_builtin)
+                .unwrap_or(false)
+        {
+            return Ok(self);
+        }
+
         match (self.run.is_some(), self.uses.is_some()) {
             (true, false) | (false, true) => Ok(self),
             _ => Err(crate::error::CiError::Message(format!(
@@ -177,6 +188,8 @@ struct RawNativeStep {
     env: BTreeMap<String, Value>,
     #[serde(default)]
     with: BTreeMap<String, Value>,
+    #[serde(default, flatten)]
+    extra: BTreeMap<String, Value>,
     #[serde(rename = "if")]
     if_condition: Option<String>,
     #[serde(rename = "working-directory")]
@@ -194,6 +207,7 @@ impl RawNativeStep {
             run: self.run,
             uses: self.uses,
             with: stringify_yaml_map(self.with),
+            extra: stringify_yaml_map(self.extra),
             shell: self.shell,
             env: stringify_yaml_map(self.env),
             if_condition: self.if_condition,
@@ -216,6 +230,16 @@ impl NativeWorkflowFile {
             env: self.env.clone(),
         }
     }
+}
+
+fn is_native_inline_clean_builtin(uses: &str) -> bool {
+    let normalized = uses
+        .split('@')
+        .next()
+        .unwrap_or(uses)
+        .trim()
+        .to_ascii_lowercase();
+    matches!(normalized.as_str(), "clean" | "ci/clean")
 }
 
 pub fn is_known_hook(name: &str) -> bool {
@@ -724,5 +748,63 @@ impl Workflow {
             WorkflowSource::Container(item) => item.metadata.clone(),
             WorkflowSource::Actions(_) => WorkflowOverride::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::NativeWorkflowFile;
+
+    #[test]
+    fn native_clean_step_accepts_inline_run_and_top_level_options() {
+        let file: NativeWorkflowFile = serde_yaml::from_str(
+            r#"
+steps:
+  - uses: clean
+    cargo: true
+    purge: true
+    ignored: only
+    run: cargo sweep -i
+"#,
+        )
+        .expect("parse workflow");
+        let step = file
+            .steps
+            .into_iter()
+            .next()
+            .expect("step")
+            .into_step(Path::new(".ci/build.yml"), 0)
+            .expect("valid step");
+
+        assert_eq!(step.uses.as_deref(), Some("clean"));
+        assert_eq!(step.run.as_deref(), Some("cargo sweep -i"));
+        assert_eq!(step.extra.get("cargo").map(String::as_str), Some("true"));
+        assert_eq!(step.extra.get("purge").map(String::as_str), Some("true"));
+        assert_eq!(step.extra.get("ignored").map(String::as_str), Some("only"));
+    }
+
+    #[test]
+    fn native_non_clean_step_rejects_run_with_uses() {
+        let file: NativeWorkflowFile = serde_yaml::from_str(
+            r#"
+steps:
+  - uses: checkout
+    run: git status
+"#,
+        )
+        .expect("parse workflow");
+        let err = file
+            .steps
+            .into_iter()
+            .next()
+            .expect("step")
+            .into_step(Path::new(".ci/build.yml"), 0)
+            .expect_err("step should be rejected");
+
+        assert!(err
+            .to_string()
+            .contains("must define exactly one of `run` or `uses`"));
     }
 }

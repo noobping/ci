@@ -96,15 +96,20 @@ Native `.ci/*.yml` steps can also use built-in `uses:` values:
 - `cache`: restore and save cache paths using `with.key` and `with.path`
 - `upload-artifact`: store artifacts using `with.name` and `with.path`
 - `download-artifact`: restore artifacts using `with.name` and optional `with.path`
-- `cleanup`: remove untracked files by default; `with.ignored: true` maps to `git clean -fdx`, `with.ignored: only` maps to `git clean -fdX`, or remove repo-relative files/directories listed in `with.path` or `with.paths`
+- `clean`: run `git clean -fd` by default; `ignored: true` maps to `git clean -fdx`, `ignored: only` maps to `git clean -fdX`, `purge: true` runs `git fetch --all --prune`, `cargo: true` runs `cargo clean`, `path` or `paths` removes repo-relative targets, and native `.ci/*.yml` steps may extend the cleanup with an inline `run:` block
+- `cleanup`: compatibility alias for the previous targeted cleanup behavior
 
 ```yaml
 steps:
   - uses: checkout
-  - uses: cleanup
-  - uses: cleanup
-    with:
-      ignored: only
+  - uses: clean
+  - uses: clean
+    ignored: only
+  - uses: clean
+    purge: true
+    cargo: true
+    run: |
+      rm -rf dist coverage
   - name: Use local cargo
     if: exists(cargo)
     run: cargo test
