@@ -22,6 +22,8 @@ ci run --event pre-push
 ci install --mode link --hooks pre-commit,pre-push
 ci status
 ci explain pre-push
+ci completion bash
+ci man --dir ./target/man
 ci clean --mode move --dest ./ci-artifacts
 ci update
 ci uninstall --restore
@@ -34,6 +36,8 @@ ci uninstall --restore
 - `status`: validate repo/config/hooks/runtimes/cache/store state
 - `explain`: show why an event or workflow matched
 - `clean`: export or keep recorded artifacts from managed run manifests
+- `completion`: generate shell completion scripts
+- `man`: generate `man1` pages from the current CLI
 
 ## Workflow sources
 
@@ -136,6 +140,34 @@ For link mode, this refreshes the symlink. For copy mode, this copies the curren
 ci status
 ci explain build
 ci explain pre-push
+```
+
+## Completion and man pages
+
+Generate bash completion to stdout:
+
+```sh
+ci completion bash
+```
+
+Install bash completion locally:
+
+```sh
+mkdir -p ~/.local/share/bash-completion/completions
+ci completion bash --output ~/.local/share/bash-completion/completions/ci
+```
+
+Generate `man1` pages:
+
+```sh
+ci man --dir ./target/man
+```
+
+Install them locally:
+
+```sh
+mkdir -p ~/.local/share/man/man1
+ci man --dir ~/.local/share/man/man1
 ```
 
 ## Remove

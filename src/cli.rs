@@ -63,6 +63,8 @@ pub enum Commands {
     Status(StatusArgs),
     Explain(ExplainArgs),
     Clean(CleanArgs),
+    Completion(CompletionArgs),
+    Man(ManArgs),
     Init(InitArgs),
     #[command(name = "self")]
     SelfCmd(SelfArgs),
@@ -192,6 +194,26 @@ pub struct CleanArgs {
 pub struct InitArgs {
     #[arg(long = "force")]
     pub force: bool,
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+pub enum CompletionShell {
+    Bash,
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct CompletionArgs {
+    #[arg(value_enum)]
+    pub shell: CompletionShell,
+
+    #[arg(long = "output")]
+    pub output: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Args)]
+pub struct ManArgs {
+    #[arg(long = "dir")]
+    pub dir: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Args, Default)]

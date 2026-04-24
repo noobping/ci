@@ -4,6 +4,7 @@ pub mod actions;
 pub mod artifacts;
 pub mod cli;
 pub mod config;
+pub mod docs;
 pub mod error;
 pub mod git;
 pub mod install;
@@ -41,6 +42,12 @@ pub fn entrypoint(argv: Vec<std::ffi::OsString>) -> i32 {
 }
 
 fn run(cli: Cli, output: Output) -> Result<i32> {
+    match &cli.command {
+        Commands::Completion(args) => return docs::cmd_completion(args),
+        Commands::Man(args) => return docs::cmd_man(args),
+        _ => {}
+    }
+
     let bootstrap_git = GitService::bootstrap(&cli.global, output.clone());
     let mut repo = RepoInfo::discover(&cli.global, &bootstrap_git)?;
     let config = config::ResolvedConfig::load(&repo, &cli.global)?;
@@ -61,6 +68,7 @@ fn run(cli: Cli, output: Output) -> Result<i32> {
         Commands::Status(args) => status::cmd_status(&ctx, &args),
         Commands::Explain(args) => status::cmd_explain(&ctx, &args),
         Commands::Clean(args) => artifacts::cmd_clean(&ctx, &args),
+        Commands::Completion(_) | Commands::Man(_) => unreachable!(),
         Commands::Init(args) => runner::cmd_init(&ctx, &args),
         Commands::SelfCmd(args) => runner::cmd_self(&ctx, &args),
     }

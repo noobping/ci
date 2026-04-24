@@ -21,3 +21,10 @@ steps:
     run: cargo test --all
   - name: Build
     run: cargo build --release
+  - name: Generate CLI Docs
+    run: |
+      tmp="$(mktemp -d)"
+      cargo run -- completion bash > "$tmp/ci.bash"
+      cargo run -- man --dir "$tmp/man"
+      test -s "$tmp/ci.bash"
+      test -s "$tmp/man/ci.1"
