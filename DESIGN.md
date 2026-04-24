@@ -33,6 +33,8 @@ support artifacts. so that the project can be cleaned. the artifects are kept or
 
 use podman multi arch support
 
+rename the `doctor` command to `status`
+
 ## Idea
 
 The idea: **a tiny self-installing CI runner that behaves like Git hooks when placed inside a repo**.
