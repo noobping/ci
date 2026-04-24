@@ -118,6 +118,7 @@ pub struct WorkflowOverride {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct DefaultsConfig {
     pub shell: Option<String>,
+    pub silent: Option<bool>,
     pub fail_fast: Option<bool>,
     pub container_runtime: Option<ContainerRuntime>,
     pub git_mode: Option<GitMode>,
@@ -174,6 +175,7 @@ impl EventFilter {
 #[derive(Clone, Debug)]
 pub struct Defaults {
     pub shell: String,
+    pub silent: bool,
     pub fail_fast: bool,
     pub container_runtime: ContainerRuntime,
     pub git_mode: GitMode,
@@ -214,6 +216,7 @@ impl ResolvedConfig {
                 .shell
                 .clone()
                 .unwrap_or_else(|| "/bin/sh".to_string()),
+            silent: file.defaults.silent.unwrap_or(false),
             fail_fast: file.defaults.fail_fast.unwrap_or(true),
             container_runtime: file
                 .defaults

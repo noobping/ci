@@ -26,31 +26,33 @@ use crate::runner::AppContext;
 pub fn entrypoint(argv: Vec<std::ffi::OsString>) -> i32 {
     let doctor_alias = cli::doctor_alias_used(&argv);
     let cli = Cli::parse_from(cli::rewrite_argv(argv));
-    let output = Output::from_globals(&cli.global);
+    let bootstrap_output = Output::from_globals(&cli.global);
 
-    if doctor_alias {
-        output.warn("`doctor` is deprecated; use `status`");
-    }
-
-    match run(cli, output.clone()) {
+    match run(cli, doctor_alias, bootstrap_output.clone()) {
         Ok(code) => code,
         Err(err) => {
-            output.error(err.to_string());
+            bootstrap_output.error(err.to_string());
             err.exit_code()
         }
     }
 }
 
-fn run(cli: Cli, output: Output) -> Result<i32> {
+fn run(cli: Cli, doctor_alias: bool, bootstrap_output: Output) -> Result<i32> {
     match &cli.command {
         Commands::Completion(args) => return docs::cmd_completion(args),
         Commands::Man(args) => return docs::cmd_man(args),
         _ => {}
     }
 
-    let bootstrap_git = GitService::bootstrap(&cli.global, output.clone());
+    let bootstrap_git = GitService::bootstrap(&cli.global, bootstrap_output.clone());
     let mut repo = RepoInfo::discover(&cli.global, &bootstrap_git)?;
     let config = config::ResolvedConfig::load(&repo, &cli.global)?;
+    let output = Output::from_settings(&cli.global, Some(&config.defaults));
+
+    if doctor_alias {
+        output.warn("`doctor` is deprecated; use `status`");
+    }
+
     let git = GitService::configured(&config.defaults, &cli.global, output.clone());
 
     repo.apply_defaults(&config.defaults);

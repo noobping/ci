@@ -143,7 +143,14 @@ Optional config lives in:
 .ci/config.yml
 ```
 
-Supported defaults include shell, fail-fast, container runtime, git mode/image, recursive checkout, default branch allowlist, artifact store, and actions cache.
+Supported defaults include shell, silent output, fail-fast, container runtime, git mode/image, recursive checkout, default branch allowlist, artifact store, and actions cache.
+
+Example:
+
+```yaml
+defaults:
+  silent: true
+```
 
 ## Actions compatibility
 

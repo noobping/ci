@@ -5,7 +5,7 @@ use tracing::Level;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 
 use crate::cli::GlobalOptions;
-use crate::config::ColorWhen;
+use crate::config::{ColorWhen, Defaults};
 
 static INIT_TRACING: Once = Once::new();
 
@@ -24,14 +24,18 @@ pub struct Output {
 
 impl Output {
     pub fn from_globals(global: &GlobalOptions) -> Self {
+        Self::from_settings(global, None)
+    }
+
+    pub fn from_settings(global: &GlobalOptions, defaults: Option<&Defaults>) -> Self {
         init_tracing(global);
 
         let verbosity = if global.verbose > 0 {
             Verbosity::Verbose(global.verbose)
-        } else if global.silent {
-            Verbosity::Silent
         } else if global.quiet {
             Verbosity::Quiet
+        } else if global.silent || defaults.map(|value| value.silent).unwrap_or(false) {
+            Verbosity::Silent
         } else {
             Verbosity::Normal
         };
@@ -100,7 +104,7 @@ mod tests {
     use std::path::PathBuf;
 
     use crate::cli::GlobalOptions;
-    use crate::config::ColorWhen;
+    use crate::config::{ColorWhen, ContainerRuntime, Defaults, GitMode};
 
     use super::{Output, Verbosity};
 
@@ -125,5 +129,44 @@ mod tests {
         global.silent = true;
 
         assert_eq!(Output::from_globals(&global).verbosity(), Verbosity::Verbose(1));
+    }
+
+    #[test]
+    fn config_can_enable_silent_by_default() {
+        let global = globals();
+        let defaults = defaults(true);
+
+        assert_eq!(
+            Output::from_settings(&global, Some(&defaults)).verbosity(),
+            Verbosity::Silent
+        );
+    }
+
+    #[test]
+    fn verbose_overrides_config_silent() {
+        let mut global = globals();
+        global.verbose = 1;
+        let defaults = defaults(true);
+
+        assert_eq!(
+            Output::from_settings(&global, Some(&defaults)).verbosity(),
+            Verbosity::Verbose(1)
+        );
+    }
+
+    fn defaults(silent: bool) -> Defaults {
+        Defaults {
+            shell: "/bin/sh".to_string(),
+            silent,
+            fail_fast: true,
+            container_runtime: ContainerRuntime::Auto,
+            git_mode: GitMode::Auto,
+            git_image: "docker.io/alpine/git:latest".to_string(),
+            recursive_checkout: true,
+            branch_allow: Vec::new(),
+            artifact_store: PathBuf::from("artifacts"),
+            actions_cache: PathBuf::from("actions-cache"),
+            node_image: "docker.io/library/node:20-alpine".to_string(),
+        }
     }
 }
