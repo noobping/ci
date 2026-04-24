@@ -72,7 +72,9 @@ Native `.ci/*.yml` steps also support first-class conditions:
 - `if: success` or `if: success()`: run when the current step path is still successful. This is the default when `if` is omitted.
 - `if: failure` or `if: failure()`: run after the previous executed step failed.
 - `if: always` or `if: always()`: run regardless of the previous step result.
-- `if: exists(cargo)`: true when a bare command exists on `PATH`, or when a repo-relative or absolute file/directory path exists.
+- `if: exists(cargo)`: true when a bare command exists on `PATH`.
+- `if: exists(path:Cargo.toml)`: true when a repo-relative or absolute file/directory path exists.
+- `if: exists(env:HOME)`: true when a workflow/step env var is set, or when the host environment provides it.
 - `if: missing(cargo)`: inverse existence check.
 
 To add a fallback step after a failure and still let the workflow recover, mark the failing step with `continue-on-error: true`.
@@ -89,24 +91,29 @@ steps:
 
 Native `.ci/*.yml` steps can also use built-in `uses:` values:
 
-- `checkout`: local checkout no-op with optional `with.submodules: true|recursive`
+- `checkout`: restore tracked files to `HEAD`, with optional `with.submodules: true|recursive`
 - `submodules`: force `git submodule update --init --recursive`
 - `cache`: restore and save cache paths using `with.key` and `with.path`
 - `upload-artifact`: store artifacts using `with.name` and `with.path`
 - `download-artifact`: restore artifacts using `with.name` and optional `with.path`
-- `cleanup`: remove repo-relative files or directories listed in `with.path` or `with.paths`
+- `cleanup`: remove untracked files by default, or remove repo-relative files/directories listed in `with.path` or `with.paths`
 
 ```yaml
 steps:
   - uses: checkout
-    with:
-      submodules: recursive
   - uses: cleanup
-    if: "exists(target)"
-    with:
-      path: target
-  - name: Build
-    run: cargo build --release
+  - name: Use local cargo
+    if: exists(cargo)
+    run: cargo test
+  - name: Fallback to toolbox cargo
+    if: missing(cargo)
+    run: toolbox run cargo test
+  - name: Only if a file exists
+    if: exists(path:Cargo.toml)
+    run: cat Cargo.toml
+  - name: Only if HOME is set
+    if: exists(env:HOME)
+    run: printf '%s\n' "$HOME"
 ```
 
 Container workflows:

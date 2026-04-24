@@ -793,6 +793,7 @@ fn run_builtin_step(
 
     match normalized.as_str() {
         "checkout" | "actions/checkout" => {
+            ctx.git.restore_tracked_files(&ctx.repo)?;
             let wants_submodules = rendered_with
                 .get("submodules")
                 .map(|value| value == "recursive" || parse_bool(value))
@@ -840,13 +841,19 @@ fn run_builtin_step(
             Ok(Some(0))
         }
         "cleanup" | "ci/cleanup" => {
-            cleanup_repo_paths(
+            run_cleanup_step(
+                ctx,
                 expr.root,
                 rendered_with.get("path").map(String::as_str),
                 rendered_with.get("paths").map(String::as_str),
                 rendered_with
                     .get("missing-ok")
                     .or_else(|| rendered_with.get("missing_ok"))
+                    .map(String::as_str),
+                rendered_with
+                    .get("ignored")
+                    .or_else(|| rendered_with.get("include-ignored"))
+                    .or_else(|| rendered_with.get("include_ignored"))
                     .map(String::as_str),
             )?;
             Ok(Some(0))
@@ -987,6 +994,23 @@ fn interpolate_map(
 
 fn parse_bool(value: &str) -> bool {
     matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+}
+
+fn run_cleanup_step(
+    ctx: &AppContext,
+    root: &Path,
+    path: Option<&str>,
+    paths: Option<&str>,
+    missing_ok: Option<&str>,
+    include_ignored: Option<&str>,
+) -> Result<()> {
+    if path.is_none() && paths.is_none() {
+        return ctx
+            .git
+            .clean_untracked_files(&ctx.repo, include_ignored.map(parse_bool).unwrap_or(false));
+    }
+
+    cleanup_repo_paths(root, path, paths, missing_ok)
 }
 
 fn cleanup_repo_paths(
@@ -1513,10 +1537,10 @@ fn evaluate_condition(expr: Option<&str>, ctx: &ExpressionContext<'_>) -> bool {
     }
 
     if let Some(target) = function_arg(expr, "exists") {
-        return target_exists(resolve_condition_target(target, ctx).as_str(), ctx.root);
+        return condition_target_exists(&resolve_condition_target(target, ctx), ctx);
     }
     if let Some(target) = function_arg(expr, "missing") {
-        return !target_exists(resolve_condition_target(target, ctx).as_str(), ctx.root);
+        return !condition_target_exists(&resolve_condition_target(target, ctx), ctx);
     }
 
     if let Some(rest) = expr.strip_prefix("startsWith(").and_then(|value| value.strip_suffix(')')) {
@@ -1595,8 +1619,21 @@ fn trim_literal(value: &str) -> String {
         .to_string()
 }
 
-fn resolve_condition_target(value: &str, ctx: &ExpressionContext<'_>) -> String {
-    resolve_expr_value(value, ctx).unwrap_or_default()
+enum ConditionTarget {
+    Generic(String),
+    Path(String),
+    Env(String),
+}
+
+fn resolve_condition_target(value: &str, ctx: &ExpressionContext<'_>) -> ConditionTarget {
+    let value = trim_literal(value);
+    if let Some(name) = value.strip_prefix("env:") {
+        return ConditionTarget::Env(resolve_expr_value(name, ctx).unwrap_or_default());
+    }
+    if let Some(path) = value.strip_prefix("path:") {
+        return ConditionTarget::Path(resolve_expr_value(path, ctx).unwrap_or_default());
+    }
+    ConditionTarget::Generic(resolve_expr_value(&value, ctx).unwrap_or_default())
 }
 
 fn function_arg<'a>(expr: &'a str, name: &str) -> Option<&'a str> {
@@ -1604,6 +1641,14 @@ fn function_arg<'a>(expr: &'a str, name: &str) -> Option<&'a str> {
         .and_then(|value| value.strip_prefix('('))
         .and_then(|value| value.strip_suffix(')'))
         .map(str::trim)
+}
+
+fn condition_target_exists(target: &ConditionTarget, ctx: &ExpressionContext<'_>) -> bool {
+    match target {
+        ConditionTarget::Generic(value) => target_exists(value, ctx.root),
+        ConditionTarget::Path(value) => path_target_exists(value, ctx.root),
+        ConditionTarget::Env(name) => env_target_exists(name, ctx.env),
+    }
 }
 
 fn executable_exists(name: &str) -> bool {
@@ -1635,6 +1680,30 @@ fn target_exists(name: &str, root: &Path) -> bool {
     }
 
     filesystem_entry_exists(&root.join(candidate)) || executable_exists(name)
+}
+
+fn path_target_exists(name: &str, root: &Path) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+
+    let candidate = Path::new(name);
+    if candidate.is_absolute() {
+        filesystem_entry_exists(candidate)
+    } else {
+        filesystem_entry_exists(&root.join(candidate))
+    }
+}
+
+fn env_target_exists(name: &str, env: &BTreeMap<String, String>) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+
+    env.get(name)
+        .map(|value| !value.is_empty())
+        .or_else(|| std::env::var_os(name).map(|value| !value.is_empty()))
+        .unwrap_or(false)
 }
 
 fn filesystem_entry_exists(path: &Path) -> bool {
@@ -1888,11 +1957,16 @@ mod tests {
 
         let mut env = BTreeMap::new();
         env.insert("BUILD_DIR".to_string(), "target".to_string());
+        env.insert("HOME".to_string(), "/tmp/test-home".to_string());
 
         let ctx = expr_ctx(temp.path(), &env, true, false);
         assert!(evaluate_condition(Some("exists(target)"), &ctx));
         assert!(evaluate_condition(Some("exists(env.BUILD_DIR)"), &ctx));
         assert!(evaluate_condition(Some("exists(marker.txt)"), &ctx));
+        assert!(evaluate_condition(Some("exists(path:marker.txt)"), &ctx));
+        assert!(evaluate_condition(Some("exists(path:env.BUILD_DIR)"), &ctx));
+        assert!(evaluate_condition(Some("exists(env:HOME)"), &ctx));
+        assert!(evaluate_condition(Some("missing(env:NOT_SET_FOR_TEST)"), &ctx));
         assert!(evaluate_condition(Some("missing(dist)"), &ctx));
     }
 }

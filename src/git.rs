@@ -73,6 +73,43 @@ impl GitService {
         }
     }
 
+    pub fn restore_tracked_files(&self, repo: &RepoInfo) -> Result<()> {
+        self.output
+            .verbose(format!("restoring tracked files in {}", repo.root.display()));
+        if self.status_in_dir(&repo.root, &["rev-parse", "--verify", "HEAD"])? != 0 {
+            return Ok(());
+        }
+
+        let status = self.status_in_dir(&repo.root, &["reset", "--hard", "HEAD"])?;
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(CiError::Message(format!(
+                "git reset --hard failed in {} with exit code {status}",
+                repo.root.display()
+            )))
+        }
+    }
+
+    pub fn clean_untracked_files(&self, repo: &RepoInfo, include_ignored: bool) -> Result<()> {
+        self.output
+            .verbose(format!("cleaning untracked files in {}", repo.root.display()));
+        let args = if include_ignored {
+            vec!["clean", "-fdx"]
+        } else {
+            vec!["clean", "-fd"]
+        };
+        let status = self.status_in_dir(&repo.root, &args)?;
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(CiError::Message(format!(
+                "git clean failed in {} with exit code {status}",
+                repo.root.display()
+            )))
+        }
+    }
+
     pub fn current_branch(&self, repo: &RepoInfo) -> Result<Option<String>> {
         let branch = self.output_in_dir(&repo.root, &["rev-parse", "--abbrev-ref", "HEAD"])?;
         if branch == "HEAD" {
