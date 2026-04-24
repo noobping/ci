@@ -31,7 +31,7 @@ add support for github / gitea actions
 
 support artifacts. so that the project can be cleaned. the artifects are kept or moved/renamed. you may call this the clean option with keep and move
 
-use podman multi arch support (optional)
+use podman multi arch support
 
 ## Idea
 
