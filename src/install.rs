@@ -9,6 +9,7 @@ use crate::runner::AppContext;
 use crate::workflow::all_hooks;
 
 pub const MANAGED_MARKER: &str = "managed-by: ci";
+pub const MANAGED_RUNNER_NAME: &str = "run";
 
 #[derive(Clone, Debug)]
 pub struct InstallState {
@@ -35,8 +36,8 @@ pub struct HookState {
 
 pub fn cmd_install(ctx: &AppContext, args: &InstallArgs) -> Result<i32> {
     let hooks = parse_hooks(args.hooks.as_deref(), ctx.repo.is_bare)?;
-    let ci_bin_dir = ctx.repo.git_dir.join("ci");
-    let ci_bin = ci_bin_dir.join("ci");
+    let ci_bin_dir = managed_runner_dir(&ctx.repo);
+    let ci_bin = managed_runner_path(&ctx.repo);
     let hooks_dir = ctx.repo.git_dir.join("hooks");
 
     ctx.output
@@ -70,13 +71,13 @@ pub fn cmd_install(ctx: &AppContext, args: &InstallArgs) -> Result<i32> {
 }
 
 pub fn cmd_update(ctx: &AppContext, args: &UpdateArgs) -> Result<i32> {
-    let ci_bin = ctx.repo.git_dir.join("ci").join("ci");
+    let ci_bin = managed_runner_path(&ctx.repo);
     let source = args
         .source
         .clone()
         .unwrap_or_else(|| ctx.repo.current_exe.clone());
 
-    if !ci_bin.exists() && !is_symlink(&ci_bin) {
+    if !path_exists_or_symlink(&ci_bin) {
         return Err(CiError::Message(format!(
             "ci does not look installed in {}; run `ci install` first",
             ctx.repo.git_dir.display()
@@ -85,12 +86,15 @@ pub fn cmd_update(ctx: &AppContext, args: &UpdateArgs) -> Result<i32> {
 
     if args.dry_run {
         println!("would update {} from {}", ci_bin.display(), source.display());
-    } else if is_symlink(&ci_bin) {
-        remove_file_if_exists(&ci_bin)?;
-        symlink(&source, &ci_bin)?;
     } else {
-        fs::copy(&source, &ci_bin)?;
-        chmod_executable(&ci_bin)?;
+        fs::create_dir_all(managed_runner_dir(&ctx.repo))?;
+        if is_symlink(&ci_bin) {
+            remove_file_if_exists(&ci_bin)?;
+            symlink(&source, &ci_bin)?;
+        } else {
+            fs::copy(&source, &ci_bin)?;
+            chmod_executable(&ci_bin)?;
+        }
     }
 
     refresh_managed_hooks(ctx, args.dry_run)?;
@@ -139,8 +143,8 @@ pub fn cmd_uninstall(ctx: &AppContext, args: &UninstallArgs) -> Result<i32> {
     }
 
     if !args.keep_binary {
-        let ci_bin = ctx.repo.git_dir.join("ci").join("ci");
-        let ci_dir = ctx.repo.git_dir.join("ci");
+        let ci_bin = managed_runner_path(&ctx.repo);
+        let ci_dir = managed_runner_dir(&ctx.repo);
         if args.dry_run {
             println!("would remove binary {}", ci_bin.display());
         } else {
@@ -154,7 +158,7 @@ pub fn cmd_uninstall(ctx: &AppContext, args: &UninstallArgs) -> Result<i32> {
 }
 
 pub fn inspect_installation(repo: &RepoInfo) -> InstallState {
-    let bin = repo.git_dir.join("ci").join("ci");
+    let bin = managed_runner_path(repo);
     let binary = if !bin.exists() && !is_symlink(&bin) {
         BinaryState::Missing(bin)
     } else if is_symlink(&bin) {
@@ -255,11 +259,23 @@ fn install_hook(hook_path: &Path, hook: &str, force: bool, backup_existing: bool
     }
 
     let script = format!(
-        "#!/usr/bin/env sh\n# {MANAGED_MARKER}\nexec \"$(dirname \"$0\")/../ci/ci\" hook {hook} \"$@\"\n"
+        "#!/usr/bin/env sh\n# {MANAGED_MARKER}\nexec \"$(dirname \"$0\")/../ci/{MANAGED_RUNNER_NAME}\" hook {hook} \"$@\"\n"
     );
     fs::write(hook_path, script)?;
     chmod_executable(hook_path)?;
     Ok(())
+}
+
+fn managed_runner_dir(repo: &RepoInfo) -> PathBuf {
+    repo.git_dir.join("ci")
+}
+
+fn managed_runner_path(repo: &RepoInfo) -> PathBuf {
+    managed_runner_dir(repo).join(MANAGED_RUNNER_NAME)
+}
+
+fn path_exists_or_symlink(path: &Path) -> bool {
+    path.exists() || is_symlink(path)
 }
 
 pub fn is_managed_hook(path: &Path) -> bool {

@@ -116,7 +116,7 @@ Reusable workflows, hosted-runner-only permissions/secrets/OIDC flows, and other
 ci install --mode link
 ```
 
-Creates `.git/ci/ci` as a symlink to the currently running `ci` binary.
+Creates `.git/ci/run` as a symlink to the currently running `ci` binary.
 
 ### Copy mode
 
@@ -124,7 +124,7 @@ Creates `.git/ci/ci` as a symlink to the currently running `ci` binary.
 ci install --mode copy
 ```
 
-Copies the currently running `ci` binary into `.git/ci/ci`.
+Copies the currently running `ci` binary into `.git/ci/run`.
 
 ## Update
 
@@ -197,7 +197,7 @@ ci hook pre-commit
 or be invoked directly as a Git hook. Installed hooks are small shell wrappers that call:
 
 ```sh
-../ci/ci hook <hook-name> "$@"
+../ci/run hook <hook-name> "$@"
 ```
 
 ## Artifacts
