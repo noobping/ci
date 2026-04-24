@@ -2,6 +2,16 @@ name: build
 on:
   - manual
   - pre-push
+branches:
+  only:
+    - main
+    - master
+    - develop
+    - development
+artifacts:
+  paths:
+    - target/release/ci
+  mode: keep
 steps:
   - name: Format
     run: cargo fmt --check

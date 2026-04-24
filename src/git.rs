@@ -1,0 +1,241 @@
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
+
+use crate::cli::GlobalOptions;
+use crate::config::{Defaults, GitMode};
+use crate::error::{CiError, Result};
+use crate::output::Output as CliOutput;
+use crate::repo::RepoInfo;
+
+#[derive(Clone, Debug)]
+pub struct GitService {
+    mode: GitMode,
+    image: String,
+    output: CliOutput,
+}
+
+impl GitService {
+    pub fn bootstrap(global: &GlobalOptions, output: CliOutput) -> Self {
+        Self {
+            mode: global.git_mode.unwrap_or(GitMode::Auto),
+            image: global
+                .git_image
+                .clone()
+                .unwrap_or_else(|| "docker.io/alpine/git:latest".to_string()),
+            output,
+        }
+    }
+
+    pub fn configured(defaults: &Defaults, global: &GlobalOptions, output: CliOutput) -> Self {
+        Self {
+            mode: global.git_mode.unwrap_or(defaults.git_mode),
+            image: global
+                .git_image
+                .clone()
+                .unwrap_or_else(|| defaults.git_image.clone()),
+            output,
+        }
+    }
+
+    pub fn mode(&self) -> GitMode {
+        self.mode
+    }
+
+    pub fn output_in_dir(&self, dir: &Path, args: &[&str]) -> Result<String> {
+        let output = self.run_git(dir, args)?;
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        } else {
+            Err(CiError::Message(format!(
+                "git failed in {}: {}",
+                dir.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            )))
+        }
+    }
+
+    pub fn status_in_dir(&self, dir: &Path, args: &[&str]) -> Result<i32> {
+        Ok(self.run_git(dir, args)?.status.code().unwrap_or(1))
+    }
+
+    pub fn ensure_submodules(&self, repo: &RepoInfo) -> Result<()> {
+        self.output
+            .verbose(format!("updating submodules in {}", repo.root.display()));
+        let status = self.status_in_dir(&repo.root, &["submodule", "update", "--init", "--recursive"])?;
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(CiError::Message(format!(
+                "git submodule update failed in {} with exit code {status}",
+                repo.root.display()
+            )))
+        }
+    }
+
+    pub fn current_branch(&self, repo: &RepoInfo) -> Result<Option<String>> {
+        let branch = self.output_in_dir(&repo.root, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+        if branch == "HEAD" {
+            Ok(None)
+        } else {
+            Ok(Some(branch))
+        }
+    }
+
+    pub fn clone_action_repo(
+        &self,
+        cache_root: &Path,
+        provider_base: &str,
+        owner: &str,
+        repo: &str,
+        reference: &str,
+    ) -> Result<PathBuf> {
+        std::fs::create_dir_all(cache_root)?;
+        let repo_dir = cache_root.join(format!(
+            "{}__{}__{}",
+            owner,
+            repo,
+            sanitize_component(reference)
+        ));
+        if repo_dir.exists() {
+            return Ok(repo_dir);
+        }
+
+        let parent = repo_dir
+            .parent()
+            .ok_or_else(|| CiError::Message("could not determine action cache parent".to_string()))?;
+        let target_name = repo_dir
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| CiError::Message("invalid action cache path".to_string()))?;
+        let remote = format!("{provider_base}/{owner}/{repo}.git");
+
+        let args = [
+            "clone",
+            "--depth",
+            "1",
+            "--branch",
+            reference,
+            &remote,
+            target_name,
+        ];
+        let status = self.status_in_dir(parent, &args)?;
+        if status == 0 {
+            Ok(repo_dir)
+        } else {
+            Err(CiError::Message(format!(
+                "failed to clone action {owner}/{repo}@{reference}"
+            )))
+        }
+    }
+
+    fn run_git(&self, dir: &Path, args: &[&str]) -> Result<Output> {
+        match self.execution_mode() {
+            ExecutionMode::Host => Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .output()
+                .map_err(Into::into),
+            ExecutionMode::Container(runtime) => self.run_git_container(&runtime, dir, args),
+        }
+    }
+
+    fn execution_mode(&self) -> ExecutionMode {
+        match self.mode {
+            GitMode::Host => ExecutionMode::Host,
+            GitMode::Auto if command_exists("git") => ExecutionMode::Host,
+            GitMode::Auto | GitMode::Alias => ExecutionMode::Container(preferred_container_runtime()),
+        }
+    }
+
+    fn run_git_container(&self, runtime: &str, dir: &Path, args: &[&str]) -> Result<Output> {
+        let parent = if dir.is_dir() {
+            dir
+        } else {
+            dir.parent()
+                .ok_or_else(|| CiError::Message(format!("cannot mount {}", dir.display())))?
+        };
+        let mount_target = "/work";
+        let workdir = if dir == parent {
+            mount_target.to_string()
+        } else {
+            format!(
+                "{mount_target}/{}",
+                dir.strip_prefix(parent)
+                    .unwrap_or(dir)
+                    .display()
+            )
+        };
+        let mount = format!("{}:{mount_target}", parent.display());
+
+        let mut command = Command::new(runtime);
+        command
+            .arg("run")
+            .arg("--rm")
+            .arg("-v")
+            .arg(mount)
+            .arg("-w")
+            .arg(workdir)
+            .arg(&self.image)
+            .arg("git");
+
+        for arg in args {
+            command.arg(arg);
+        }
+
+        command.output().map_err(Into::into)
+    }
+}
+
+enum ExecutionMode {
+    Host,
+    Container(String),
+}
+
+pub fn command_exists(name: &str) -> bool {
+    Command::new("sh")
+        .arg("-c")
+        .arg(format!("command -v {name} >/dev/null 2>&1"))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+pub fn preferred_container_runtime() -> String {
+    if command_exists("podman") {
+        "podman".to_string()
+    } else {
+        "docker".to_string()
+    }
+}
+
+pub fn sanitize_component(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+pub fn render_command(command: &Command) -> String {
+    let mut parts = Vec::new();
+    parts.push(command.get_program().to_string_lossy().to_string());
+    for arg in command.get_args() {
+        parts.push(arg.to_string_lossy().to_string());
+    }
+    parts.join(" ")
+}
+
+pub fn env_pairs(values: &[(String, String)]) -> Vec<OsString> {
+    values
+        .iter()
+        .map(|(key, value)| OsString::from(format!("{key}={value}")))
+        .collect()
+}

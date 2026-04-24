@@ -1,0 +1,29 @@
+name: self-host
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+      - develop
+      - development
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        phase: [fmt, test, build]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run phase
+        run: |
+          case "${{ matrix.phase }}" in
+            fmt) cargo fmt --check ;;
+            test) cargo test --all ;;
+            build) cargo build --release ;;
+          esac

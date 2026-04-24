@@ -1,0 +1,1545 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs::{self, OpenOptions};
+use std::io::Read;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use fs2::FileExt;
+use serde::Deserialize;
+
+use crate::actions::{ActionRunStep, ActionService, ActionStep, ActionUsesStep, ActionsJob, ActionsWorkflow};
+use crate::artifacts::ArtifactSession;
+use crate::cli::{GlobalOptions, HookArgs, InitArgs, ListArgs, RunArgs, SelfArgs};
+use crate::config::{ContainerRuntime, ResolvedConfig};
+use crate::error::{CiError, Result};
+use crate::git::{command_exists, preferred_container_runtime, sanitize_component, GitService};
+use crate::output::Output;
+use crate::repo::RepoInfo;
+use crate::workflow::{
+    self, canonical_events, kind_name, provider_name, select_workflows, NativeStep,
+    ResolvedWorkflow, WorkflowMatch, WorkflowSource,
+};
+
+const DEFAULT_RUST_WORKFLOW: &str = r#"name: build
+on:
+  - manual
+  - pre-push
+steps:
+  - name: Format
+    run: cargo fmt --check
+  - name: Lint
+    run: cargo clippy --all-targets -- -D warnings
+  - name: Test
+    run: cargo test --all
+  - name: Build
+    run: cargo build --release
+"#;
+
+const DEFAULT_SHELL_WORKFLOW: &str = r#"name: build
+on:
+  - manual
+steps:
+  - name: Build
+    run: echo "Add your build command to .ci/build.yml"
+"#;
+
+#[derive(Clone, Debug)]
+pub struct AppContext {
+    pub global: GlobalOptions,
+    pub output: Output,
+    pub repo: RepoInfo,
+    pub config: ResolvedConfig,
+    pub git: GitService,
+}
+
+impl AppContext {
+    pub fn new(
+        global: GlobalOptions,
+        output: Output,
+        repo: RepoInfo,
+        config: ResolvedConfig,
+        git: GitService,
+    ) -> Self {
+        Self {
+            global,
+            output,
+            repo,
+            config,
+            git,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct RunInvocation {
+    workflow: Option<String>,
+    event: String,
+    dry_run: bool,
+    keep_going: bool,
+    container_runtime: ContainerRuntime,
+    respect_branches: bool,
+    recursive_checkout: bool,
+    lock: bool,
+    hook_args: Vec<String>,
+    branch: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct ExpressionContext<'a> {
+    event: &'a str,
+    branch: Option<&'a str>,
+    env: &'a BTreeMap<String, String>,
+    matrix: &'a BTreeMap<String, String>,
+    inputs: &'a BTreeMap<String, String>,
+    success: bool,
+}
+
+#[derive(Default)]
+struct CacheState {
+    pending: Vec<PendingCache>,
+}
+
+struct PendingCache {
+    key: String,
+    paths: Vec<String>,
+}
+
+pub fn cmd_list(ctx: &AppContext, _args: &ListArgs) -> Result<i32> {
+    let workflows = workflow::discover_all(&ctx.repo)?;
+    if workflows.is_empty() {
+        ctx.output
+            .info(format!("No workflows found in {}", ctx.repo.ci_dir.display()));
+        return Ok(0);
+    }
+
+    for item in workflows {
+        println!(
+            "{:<28} {:<15} {:<12} {}",
+            item.name,
+            provider_name(&item.provider),
+            kind_name(&item.kind),
+            item.path.display()
+        );
+    }
+
+    Ok(0)
+}
+
+pub fn cmd_run(ctx: &AppContext, args: &RunArgs) -> Result<i32> {
+    let keep_going = if args.keep_going {
+        true
+    } else if args.fail_fast {
+        false
+    } else {
+        !ctx.config.defaults.fail_fast
+    };
+
+    let invocation = RunInvocation {
+        workflow: if args.all { None } else { args.workflow.clone() },
+        event: args.event.clone(),
+        dry_run: args.dry_run,
+        keep_going,
+        container_runtime: args
+            .container_runtime
+            .unwrap_or(ctx.config.defaults.container_runtime),
+        respect_branches: args.respect_branches,
+        recursive_checkout: !args.no_recursive_checkout && ctx.config.defaults.recursive_checkout,
+        lock: args.lock,
+        hook_args: Vec::new(),
+        branch: ctx.repo.branch.clone(),
+    };
+
+    execute_run(ctx, invocation)
+}
+
+pub fn cmd_hook(ctx: &AppContext, args: &HookArgs) -> Result<i32> {
+    if !workflow::is_known_hook(&args.hook) {
+        return Err(CiError::Usage(format!("unknown Git hook `{}`", args.hook)));
+    }
+
+    let branch = branch_from_hook(ctx, &args.hook, &args.hook_args)?;
+    let invocation = RunInvocation {
+        workflow: None,
+        event: args.hook.clone(),
+        dry_run: false,
+        keep_going: !ctx.config.defaults.fail_fast,
+        container_runtime: ctx.config.defaults.container_runtime,
+        respect_branches: true,
+        recursive_checkout: ctx.config.defaults.recursive_checkout,
+        lock: true,
+        hook_args: args.hook_args.clone(),
+        branch,
+    };
+    execute_run(ctx, invocation)
+}
+
+pub fn cmd_init(ctx: &AppContext, args: &InitArgs) -> Result<i32> {
+    fs::create_dir_all(&ctx.repo.ci_dir)?;
+    let build = ctx.repo.ci_dir.join("build.yml");
+    if build.exists() && !args.force {
+        return Err(CiError::Message(format!(
+            "{} already exists; use `ci init --force` to replace it",
+            build.display()
+        )));
+    }
+
+    let content = if ctx.repo.root.join("Cargo.toml").exists() {
+        DEFAULT_RUST_WORKFLOW
+    } else {
+        DEFAULT_SHELL_WORKFLOW
+    };
+
+    fs::write(&build, content)?;
+    ctx.output.info(format!("Created {}", build.display()));
+    Ok(0)
+}
+
+pub fn cmd_self(ctx: &AppContext, _args: &SelfArgs) -> Result<i32> {
+    println!("ci {}", env!("CARGO_PKG_VERSION"));
+    println!("executable: {}", ctx.repo.current_exe.display());
+    println!("repository: {}", ctx.repo.root.display());
+    Ok(0)
+}
+
+fn execute_run(ctx: &AppContext, invocation: RunInvocation) -> Result<i32> {
+    ctx.repo.ensure_state_dirs()?;
+
+    let _lock = if invocation.lock {
+        Some(RunLock::acquire(&ctx.repo.state_dir.join("lock"))?)
+    } else {
+        None
+    };
+
+    if invocation.recursive_checkout {
+        ctx.git.ensure_submodules(&ctx.repo)?;
+    }
+
+    let workflows = workflow::discover_all(&ctx.repo)?;
+    let matches = select_workflows(
+        &workflows,
+        &ctx.config,
+        invocation.workflow.as_deref(),
+        &invocation.event,
+        invocation.branch.as_deref(),
+        invocation.respect_branches,
+    );
+
+    if matches.is_empty() {
+        if let Some(name) = &invocation.workflow {
+            return Ok(if workflows.iter().any(|workflow| workflow.name == *name) {
+                0
+            } else {
+                127
+            });
+        }
+        ctx.output
+            .verbose(format!("no workflows matched event `{}`", invocation.event));
+        return Ok(0);
+    }
+
+    if invocation.dry_run {
+        for item in &matches {
+            println!(
+                "would run {} [{}] because {}",
+                item.workflow.name,
+                provider_name(&item.workflow.provider),
+                item.reasons.join("; ")
+            );
+        }
+        return Ok(0);
+    }
+
+    let run_id = new_run_id();
+    let mut artifacts = ArtifactSession::new(
+        &ctx.repo,
+        &invocation.event,
+        invocation.branch.as_deref(),
+        &run_id,
+        ctx.output.clone(),
+    )?;
+    let mut last_failure = 0;
+
+    for item in matches {
+        ctx.output.info(format!("==> {}", item.workflow.name));
+        let status = run_one_workflow(ctx, &invocation, &item, &run_id, &mut artifacts)?;
+        if status != 0 {
+            last_failure = status;
+            if !invocation.keep_going {
+                artifacts.finish()?;
+                return Ok(status);
+            }
+        }
+    }
+
+    artifacts.finish()?;
+    Ok(last_failure)
+}
+
+fn run_one_workflow(
+    ctx: &AppContext,
+    invocation: &RunInvocation,
+    item: &WorkflowMatch,
+    run_id: &str,
+    artifacts: &mut ArtifactSession,
+) -> Result<i32> {
+    let base_env = workflow_env(ctx, invocation, &item.resolved, run_id);
+    let status = match &item.workflow.source {
+        WorkflowSource::Executable(_) => run_executable(ctx, invocation, &item.resolved, &base_env)?,
+        WorkflowSource::NativeYaml(native) => {
+            run_native_yaml(ctx, invocation, &item.resolved, &native.steps, &base_env)?
+        }
+        WorkflowSource::Container(_) => run_container_workflow(ctx, invocation, &item.resolved, &base_env)?,
+        WorkflowSource::Actions(actions) => run_actions_workflow(
+            ctx,
+            invocation,
+            &item.resolved,
+            actions,
+            &base_env,
+            artifacts,
+        )?,
+    };
+
+    let mut stored = artifacts.take_pending_artifacts(&item.workflow.name);
+    if status == 0 && !matches!(&item.workflow.source, WorkflowSource::Actions(_)) {
+        stored.extend(artifacts.capture_declared(
+            &item.workflow.name,
+            &item.resolved.artifacts,
+            false,
+        )?);
+    }
+    artifacts.record_workflow(
+        &item.workflow.name,
+        provider_name(&item.workflow.provider),
+        kind_name(&item.workflow.kind),
+        &item.workflow.path,
+        status,
+        stored,
+    );
+    Ok(status)
+}
+
+fn run_executable(
+    ctx: &AppContext,
+    invocation: &RunInvocation,
+    resolved: &ResolvedWorkflow,
+    env: &BTreeMap<String, String>,
+) -> Result<i32> {
+    if !resolved.path.exists() {
+        return Err(CiError::NotFound(resolved.path.display().to_string()));
+    }
+    if fs::metadata(&resolved.path)?.permissions().mode() & 0o111 == 0 {
+        return Err(CiError::NotExecutable(resolved.path.clone()));
+    }
+
+    let mut command = Command::new(&resolved.path);
+    command
+        .current_dir(resolve_workdir(&ctx.repo.root, resolved.execution.workspace.as_deref()))
+        .args(&invocation.hook_args)
+        .envs(env)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+
+    Ok(command.status()?.code().unwrap_or(1))
+}
+
+fn run_native_yaml(
+    ctx: &AppContext,
+    _invocation: &RunInvocation,
+    resolved: &ResolvedWorkflow,
+    steps: &[NativeStep],
+    base_env: &BTreeMap<String, String>,
+) -> Result<i32> {
+    let mut success = true;
+    let empty_matrix = BTreeMap::new();
+    let empty_inputs = BTreeMap::new();
+    for step in steps {
+        let step_name = step.name.as_deref().unwrap_or("run");
+        ctx.output.info(format!("--> {step_name}"));
+
+        let condition_env = merged_env(base_env, &resolved.env, &step.env);
+        let expr = ExpressionContext {
+            event: base_env.get("CI_EVENT").map(String::as_str).unwrap_or("manual"),
+            branch: base_env.get("CI_BRANCH").map(String::as_str),
+            env: &condition_env,
+            matrix: &empty_matrix,
+            inputs: &empty_inputs,
+            success,
+        };
+        if !evaluate_condition(step.if_condition.as_deref(), &expr) {
+            ctx.output.verbose(format!("skipping step `{step_name}` due to condition"));
+            continue;
+        }
+
+        let shell = step
+            .shell
+            .as_deref()
+            .or(resolved.execution.shell.as_deref())
+            .unwrap_or(&ctx.config.defaults.shell);
+        let script = interpolate_expressions(&step.run, &expr);
+        let status = run_shell(
+            shell,
+            &script,
+            &resolve_workdir(
+                &ctx.repo.root,
+                step.working_directory
+                    .as_deref()
+                    .or(resolved.execution.workspace.as_deref()),
+            ),
+            &condition_env,
+        )?;
+        success = status == 0;
+        if status != 0 && !step.continue_on_error {
+            return Ok(status);
+        }
+    }
+    Ok(0)
+}
+
+fn run_container_workflow(
+    ctx: &AppContext,
+    invocation: &RunInvocation,
+    resolved: &ResolvedWorkflow,
+    env: &BTreeMap<String, String>,
+) -> Result<i32> {
+    let backend = ContainerBackend::detect(invocation.container_runtime)?;
+    let tag = format!("ci-{}", sanitize_component(&resolved.name));
+    let build_status = backend.build(
+        &resolved.path,
+        &ctx.repo.root,
+        &tag,
+        resolved.container.platform.as_deref(),
+    )?;
+    if build_status != 0 {
+        return Ok(build_status);
+    }
+
+    backend.run_shell(
+        &tag,
+        &ctx.repo.root,
+        &ctx.config.defaults.shell,
+        "true",
+        env,
+        &ctx.repo.root,
+        resolved.container.platform.as_deref(),
+        None,
+    )
+}
+
+fn run_actions_workflow(
+    ctx: &AppContext,
+    invocation: &RunInvocation,
+    resolved: &ResolvedWorkflow,
+    workflow: &ActionsWorkflow,
+    base_env: &BTreeMap<String, String>,
+    artifacts: &mut ArtifactSession,
+) -> Result<i32> {
+    let jobs = order_jobs(&workflow.jobs)?;
+    let mut cache_state = CacheState::default();
+    let empty_inputs = BTreeMap::new();
+
+    for job in jobs {
+        for matrix in if job.matrix.is_empty() {
+            vec![BTreeMap::new()]
+        } else {
+            job.matrix.clone()
+        } {
+            let env = merged_env(base_env, &workflow.env, &job.env);
+            let expr = ExpressionContext {
+                event: &invocation.event,
+                branch: invocation.branch.as_deref(),
+                env: &env,
+                matrix: &matrix,
+                inputs: &empty_inputs,
+                success: true,
+            };
+            if !evaluate_condition(job.if_condition.as_deref(), &expr) {
+                ctx.output
+                    .verbose(format!("skipping job `{}` due to condition", job.name));
+                continue;
+            }
+
+            let backend = if job.container.is_some() || !job.services.is_empty() {
+                Some(ContainerBackend::detect(invocation.container_runtime)?)
+            } else {
+                None
+            };
+
+            let mut services = Vec::new();
+            if let Some(backend) = &backend {
+                for (name, service) in &job.services {
+                    let container_name =
+                        format!("ci-{}-{}-{}", sanitize_component(&workflow.name), sanitize_component(&job.id), sanitize_component(name));
+                    backend.start_service(&container_name, service)?;
+                    services.push(container_name);
+                }
+            }
+
+            let status = run_actions_job(
+                ctx,
+                workflow,
+                resolved,
+                &job,
+                &matrix,
+                base_env,
+                backend.as_ref(),
+                artifacts,
+                &mut cache_state,
+            )?;
+
+            if let Some(backend) = &backend {
+                for service in services {
+                    let _ = backend.stop_container(&service);
+                }
+            }
+
+            save_pending_caches(ctx, &cache_state)?;
+            cache_state.pending.clear();
+
+            if status != 0 && !job.continue_on_error {
+                return Ok(status);
+            }
+        }
+    }
+
+    Ok(0)
+}
+
+fn run_actions_job(
+    ctx: &AppContext,
+    workflow: &ActionsWorkflow,
+    resolved: &ResolvedWorkflow,
+    job: &ActionsJob,
+    matrix: &BTreeMap<String, String>,
+    base_env: &BTreeMap<String, String>,
+    backend: Option<&ContainerBackend>,
+    artifacts: &mut ArtifactSession,
+    cache_state: &mut CacheState,
+) -> Result<i32> {
+    let mut success = true;
+    for step in &job.steps {
+        match step {
+            ActionStep::Run(step) => {
+                let status = run_actions_run_step(
+                    ctx,
+                    workflow,
+                    resolved,
+                    job,
+                    matrix,
+                    base_env,
+                    backend,
+                    step,
+                    success,
+                )?;
+                success = status == 0;
+                if status != 0 && !step.continue_on_error {
+                    return Ok(status);
+                }
+            }
+            ActionStep::Uses(step) => {
+                let status = run_actions_uses_step(
+                    ctx,
+                    workflow,
+                    job,
+                    matrix,
+                    base_env,
+                    backend,
+                    step,
+                    success,
+                    artifacts,
+                    cache_state,
+                )?;
+                success = status == 0;
+                if status != 0 && !step.continue_on_error {
+                    return Ok(status);
+                }
+            }
+        }
+    }
+    Ok(0)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_actions_run_step(
+    ctx: &AppContext,
+    workflow: &ActionsWorkflow,
+    resolved: &ResolvedWorkflow,
+    job: &ActionsJob,
+    matrix: &BTreeMap<String, String>,
+    base_env: &BTreeMap<String, String>,
+    backend: Option<&ContainerBackend>,
+    step: &ActionRunStep,
+    success: bool,
+) -> Result<i32> {
+    ctx.output.info(format!("--> {}", step.name));
+    let empty_inputs = BTreeMap::new();
+    let merged = merged_env(
+        &merged_env(base_env, &workflow.env, &job.env),
+        &resolved.env,
+        &step.env,
+    );
+    let expr = ExpressionContext {
+        event: base_env.get("CI_EVENT").map(String::as_str).unwrap_or("manual"),
+        branch: base_env.get("CI_BRANCH").map(String::as_str),
+        env: &merged,
+        matrix,
+        inputs: &empty_inputs,
+        success,
+    };
+    if !evaluate_condition(step.if_condition.as_deref(), &expr) {
+        ctx.output
+            .verbose(format!("skipping action step `{}` due to condition", step.name));
+        return Ok(0);
+    }
+
+    let shell = step
+        .shell
+        .as_deref()
+        .or(job.defaults.shell.as_deref())
+        .or(workflow.defaults.shell.as_deref())
+        .unwrap_or(&ctx.config.defaults.shell);
+    let script = interpolate_expressions(&step.run, &expr);
+    let workdir = resolve_workdir(
+        &ctx.repo.root,
+        step.working_directory
+            .as_deref()
+            .or(job.defaults.working_directory.as_deref())
+            .or(workflow.defaults.working_directory.as_deref())
+            .or(resolved.execution.workspace.as_deref()),
+    );
+
+    if let Some(container) = job.container.as_ref() {
+        backend
+            .ok_or_else(|| CiError::Message("container runtime was not initialised".to_string()))?
+            .run_shell(
+                &container.image,
+                &ctx.repo.root,
+                shell,
+                &script,
+                &merged,
+                &workdir,
+                resolved.container.platform.as_deref(),
+                container.options.as_deref(),
+            )
+    } else {
+        run_shell(shell, &script, &workdir, &merged)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_actions_uses_step(
+    ctx: &AppContext,
+    workflow: &ActionsWorkflow,
+    job: &ActionsJob,
+    matrix: &BTreeMap<String, String>,
+    base_env: &BTreeMap<String, String>,
+    backend: Option<&ContainerBackend>,
+    step: &ActionUsesStep,
+    success: bool,
+    artifacts: &mut ArtifactSession,
+    cache_state: &mut CacheState,
+) -> Result<i32> {
+    ctx.output.info(format!("--> {}", step.name));
+    let empty_env = BTreeMap::new();
+    let merged = merged_env(&merged_env(base_env, &workflow.env, &job.env), &empty_env, &step.env);
+    let expr = ExpressionContext {
+        event: base_env.get("CI_EVENT").map(String::as_str).unwrap_or("manual"),
+        branch: base_env.get("CI_BRANCH").map(String::as_str),
+        env: &merged,
+        matrix,
+        inputs: &step.with,
+        success,
+    };
+    if !evaluate_condition(step.if_condition.as_deref(), &expr) {
+        return Ok(0);
+    }
+
+    let normalized = strip_action_ref(&step.uses).to_lowercase();
+    if normalized == "actions/checkout" {
+        let wants_submodules = step
+            .with
+            .get("submodules")
+            .map(|value| value == "true" || value == "recursive")
+            .unwrap_or(ctx.config.defaults.recursive_checkout);
+        if wants_submodules {
+            ctx.git.ensure_submodules(&ctx.repo)?;
+        }
+        return Ok(0);
+    }
+
+    if normalized == "actions/cache" {
+        let key = interpolate_expressions(step.with.get("key").map(String::as_str).unwrap_or("default"), &expr);
+        let paths = parse_path_list(step.with.get("path").map(String::as_str).unwrap_or(""));
+        restore_cache(ctx, &key, &paths)?;
+        cache_state.pending.push(PendingCache { key, paths });
+        return Ok(0);
+    }
+
+    if normalized == "actions/upload-artifact" {
+        let name = step
+            .with
+            .get("name")
+            .map(|value| interpolate_expressions(value, &expr))
+            .unwrap_or_else(|| step.name.clone());
+        let paths = parse_path_list(step.with.get("path").map(String::as_str).unwrap_or(""));
+        let _ = artifacts.upload_named_artifact(&workflow.name, &name, &paths, false)?;
+        return Ok(0);
+    }
+
+    if normalized == "actions/download-artifact" {
+        let name = step
+            .with
+            .get("name")
+            .map(|value| interpolate_expressions(value, &expr))
+            .unwrap_or_else(|| step.name.clone());
+        let dest = resolve_workdir(
+            &ctx.repo.root,
+            Some(Path::new(
+                step.with.get("path").map(String::as_str).unwrap_or("."),
+            )),
+        );
+        let _ = artifacts.download_named_artifact(&name, &dest, false)?;
+        return Ok(0);
+    }
+
+    if step.uses.starts_with("docker://") {
+        let image = step.uses.trim_start_matches("docker://");
+        return backend
+            .ok_or_else(|| CiError::Message("docker actions require a container runtime".to_string()))?
+            .run_shell(
+                image,
+                &ctx.repo.root,
+                &ctx.config.defaults.shell,
+                "true",
+                &merged,
+                &ctx.repo.root,
+                None,
+                None,
+            );
+    }
+
+    if step.uses.starts_with("./") {
+        let dir = ctx.repo.root.join(step.uses.trim_start_matches("./"));
+        return run_local_action(ctx, workflow, matrix, &merged, backend, &dir, &step.with);
+    }
+
+    let remote = parse_remote_action(&step.uses)?;
+    let repo = ctx.git.clone_action_repo(
+        &ctx.repo.actions_cache,
+        workflow.remote_base(),
+        &remote.owner,
+        &remote.repo,
+        &remote.reference,
+    )?;
+    let dir = if remote.subpath.is_empty() {
+        repo
+    } else {
+        repo.join(remote.subpath)
+    };
+    run_local_action(ctx, workflow, matrix, &merged, backend, &dir, &step.with)
+}
+
+fn run_local_action(
+    ctx: &AppContext,
+    _workflow: &ActionsWorkflow,
+    matrix: &BTreeMap<String, String>,
+    base_env: &BTreeMap<String, String>,
+    backend: Option<&ContainerBackend>,
+    dir: &Path,
+    inputs: &BTreeMap<String, String>,
+) -> Result<i32> {
+    let meta = load_action_metadata(dir)?;
+    match meta.runs {
+        ActionRuns::Composite { steps } => {
+            let mut success = true;
+            for step in steps {
+                match step {
+                    ActionMetadataStep::Run(step) => {
+                        let expr = ExpressionContext {
+                            event: base_env.get("CI_EVENT").map(String::as_str).unwrap_or("manual"),
+                            branch: base_env.get("CI_BRANCH").map(String::as_str),
+                            env: base_env,
+                            matrix,
+                            inputs,
+                            success,
+                        };
+                        if !evaluate_condition(step.if_condition.as_deref(), &expr) {
+                            continue;
+                        }
+                        let shell = step.shell.as_deref().unwrap_or(&ctx.config.defaults.shell);
+                        let script = interpolate_expressions(&step.run, &expr);
+                        let workdir = resolve_workdir(
+                            dir,
+                            step.working_directory.as_deref().or(Some(".")),
+                        );
+                        let status = run_shell(shell, &script, &workdir, base_env)?;
+                        success = status == 0;
+                        if status != 0 && !step.continue_on_error {
+                            return Ok(status);
+                        }
+                    }
+                    ActionMetadataStep::Uses(_) => {
+                        return Err(CiError::Message(format!(
+                            "composite action {} contains nested `uses`, which is not supported yet",
+                            dir.display()
+                        )))
+                    }
+                }
+            }
+            Ok(0)
+        }
+        ActionRuns::Docker {
+            image,
+            dockerfile,
+            entrypoint,
+            args,
+        } => {
+            let backend = backend
+                .ok_or_else(|| CiError::Message("docker actions require a container runtime".to_string()))?;
+            let image = if let Some(image) = image {
+                image
+            } else {
+                let dockerfile = dockerfile
+                    .as_ref()
+                    .map(|path| dir.join(path))
+                    .unwrap_or_else(|| dir.join("Dockerfile"));
+                let tag = format!(
+                    "ci-action-{}",
+                    sanitize_component(dir.file_name().and_then(|value| value.to_str()).unwrap_or("action"))
+                );
+                let build_status = backend.build(&dockerfile, dir, &tag, None)?;
+                if build_status != 0 {
+                    return Ok(build_status);
+                }
+                tag
+            };
+
+            backend.run_action_container(
+                &image,
+                dir,
+                base_env,
+                entrypoint.as_deref(),
+                &args.unwrap_or_default(),
+            )
+        }
+        ActionRuns::Node { main } => {
+            let path = dir.join(main);
+            if command_exists("node") {
+                let mut command = Command::new("node");
+                command
+                    .arg(&path)
+                    .current_dir(dir)
+                    .envs(base_env)
+                    .stdin(Stdio::inherit())
+                    .stdout(Stdio::inherit())
+                    .stderr(Stdio::inherit());
+                Ok(command.status()?.code().unwrap_or(1))
+            } else {
+                let backend = backend
+                    .ok_or_else(|| CiError::Message("js actions require node or a container runtime".to_string()))?;
+                backend.run_shell(
+                    &ctx.config.defaults.node_image,
+                    dir,
+                    &ctx.config.defaults.shell,
+                    &format!("node {}", path.file_name().and_then(|value| value.to_str()).unwrap_or("index.js")),
+                    base_env,
+                    dir,
+                    None,
+                    None,
+                )
+            }
+        }
+    }
+}
+
+fn workflow_env(
+    ctx: &AppContext,
+    invocation: &RunInvocation,
+    resolved: &ResolvedWorkflow,
+    run_id: &str,
+) -> BTreeMap<String, String> {
+    let mut env = BTreeMap::new();
+    env.insert("CI".to_string(), "true".to_string());
+    env.insert("CI_TOOL".to_string(), "ci".to_string());
+    env.insert("CI_EVENT".to_string(), invocation.event.clone());
+    env.insert("CI_HOOK".to_string(), invocation.event.clone());
+    env.insert("CI_REPO".to_string(), ctx.repo.root.display().to_string());
+    env.insert("CI_GIT_DIR".to_string(), ctx.repo.git_dir.display().to_string());
+    env.insert("CI_WORKFLOW".to_string(), resolved.name.clone());
+    env.insert("CI_WORKFLOW_PATH".to_string(), resolved.path.display().to_string());
+    env.insert(
+        "CI_WORKFLOW_DIR".to_string(),
+        resolved
+            .path
+            .parent()
+            .unwrap_or(&ctx.repo.ci_dir)
+            .display()
+            .to_string(),
+    );
+    env.insert("CI_RUN_ID".to_string(), run_id.to_string());
+    env.insert(
+        "CI_PROVIDER".to_string(),
+        provider_name(&resolved.provider).to_string(),
+    );
+    env.insert("CI_HOOK_ARGS".to_string(), invocation.hook_args.join(" "));
+    if let Some(branch) = invocation.branch.as_ref() {
+        env.insert("CI_BRANCH".to_string(), branch.clone());
+        env.insert("GITHUB_REF".to_string(), format!("refs/heads/{branch}"));
+        env.insert("GITHUB_REF_NAME".to_string(), branch.clone());
+        env.insert("GITEA_REF".to_string(), format!("refs/heads/{branch}"));
+        env.insert("GITEA_REF_NAME".to_string(), branch.clone());
+    }
+    env.insert("GITHUB_ACTIONS".to_string(), "true".to_string());
+    env.insert("GITHUB_WORKSPACE".to_string(), ctx.repo.root.display().to_string());
+    env.insert("GITHUB_EVENT_NAME".to_string(), canonical_events(&invocation.event).last().cloned().unwrap_or_else(|| invocation.event.clone()));
+    env.insert("GITHUB_WORKFLOW".to_string(), resolved.name.clone());
+    env.insert("GITEA_WORKSPACE".to_string(), ctx.repo.root.display().to_string());
+    env.insert("GITEA_EVENT_NAME".to_string(), invocation.event.clone());
+    for (key, value) in &resolved.env {
+        env.insert(key.clone(), value.clone());
+    }
+    env
+}
+
+fn resolve_workdir(root: &Path, override_dir: Option<&Path>) -> PathBuf {
+    match override_dir {
+        Some(path) if path.is_absolute() => path.to_path_buf(),
+        Some(path) => root.join(path),
+        None => root.to_path_buf(),
+    }
+}
+
+fn run_shell(shell: &str, script: &str, workdir: &Path, env: &BTreeMap<String, String>) -> Result<i32> {
+    let mut command = Command::new(shell);
+    command
+        .arg("-lc")
+        .arg(script)
+        .current_dir(workdir)
+        .envs(env)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    Ok(command.status()?.code().unwrap_or(1))
+}
+
+fn merged_env(
+    base: &BTreeMap<String, String>,
+    middle: &BTreeMap<String, String>,
+    top: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut merged = base.clone();
+    for (key, value) in middle {
+        merged.insert(key.clone(), value.clone());
+    }
+    for (key, value) in top {
+        merged.insert(key.clone(), value.clone());
+    }
+    merged
+}
+
+fn branch_from_hook(ctx: &AppContext, hook: &str, hook_args: &[String]) -> Result<Option<String>> {
+    if hook == "update" {
+        return Ok(hook_args
+            .first()
+            .and_then(|value| value.strip_prefix("refs/heads/"))
+            .map(ToOwned::to_owned)
+            .or_else(|| ctx.repo.branch.clone()));
+    }
+
+    if matches!(hook, "pre-receive" | "post-receive") {
+        let mut stdin = String::new();
+        std::io::stdin().read_to_string(&mut stdin)?;
+        for line in stdin.lines() {
+            let mut parts = line.split_whitespace();
+            let _old = parts.next();
+            let _new = parts.next();
+            if let Some(reference) = parts.next() {
+                if let Some(branch) = reference.strip_prefix("refs/heads/") {
+                    return Ok(Some(branch.to_string()));
+                }
+            }
+        }
+    }
+
+    Ok(ctx.repo.branch.clone())
+}
+
+fn new_run_id() -> String {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    format!("{stamp}-{}", std::process::id())
+}
+
+struct RunLock {
+    file: fs::File,
+}
+
+impl RunLock {
+    fn acquire(path: &Path) -> Result<Self> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(path)?;
+        file.try_lock_exclusive()
+            .map_err(|_| CiError::Message(format!("another `ci` run is active ({})", path.display())))?;
+        Ok(Self { file })
+    }
+}
+
+impl Drop for RunLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+struct ContainerBackend {
+    runtime: String,
+}
+
+impl ContainerBackend {
+    fn detect(runtime: ContainerRuntime) -> Result<Self> {
+        let runtime = match runtime {
+            ContainerRuntime::Podman => "podman".to_string(),
+            ContainerRuntime::Docker => "docker".to_string(),
+            ContainerRuntime::Auto => preferred_container_runtime(),
+        };
+
+        if !command_exists(&runtime) {
+            return Err(CiError::Message(format!(
+                "container runtime `{runtime}` is not available"
+            )));
+        }
+
+        Ok(Self { runtime })
+    }
+
+    fn build(&self, file: &Path, context: &Path, tag: &str, platform: Option<&str>) -> Result<i32> {
+        let mut command = Command::new(&self.runtime);
+        if self.runtime == "docker" && platform.is_some() {
+            command.arg("buildx").arg("build").arg("--load");
+        } else {
+            command.arg("build");
+        }
+        if let Some(platform) = platform {
+            command.arg("--platform").arg(platform);
+        }
+        command
+            .arg("-f")
+            .arg(file)
+            .arg("-t")
+            .arg(tag)
+            .arg(context)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+        Ok(command.status()?.code().unwrap_or(1))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_shell(
+        &self,
+        image: &str,
+        repo_root: &Path,
+        shell: &str,
+        script: &str,
+        env: &BTreeMap<String, String>,
+        workdir: &Path,
+        platform: Option<&str>,
+        options: Option<&str>,
+    ) -> Result<i32> {
+        let mount = format!("{}:/work", repo_root.display());
+        let container_workdir = if let Ok(relative) = workdir.strip_prefix(repo_root) {
+            if relative.as_os_str().is_empty() {
+                "/work".to_string()
+            } else {
+                format!("/work/{}", relative.display())
+            }
+        } else {
+            "/work".to_string()
+        };
+
+        let mut command = Command::new(&self.runtime);
+        command
+            .arg("run")
+            .arg("--rm")
+            .arg("--network")
+            .arg("host")
+            .arg("-v")
+            .arg(mount)
+            .arg("-w")
+            .arg(container_workdir);
+        if let Some(platform) = platform {
+            command.arg("--platform").arg(platform);
+        }
+        if let Some(options) = options {
+            for part in options.split_whitespace() {
+                command.arg(part);
+            }
+        }
+        for (key, value) in env {
+            command.arg("-e").arg(format!("{key}={value}"));
+        }
+        command
+            .arg(image)
+            .arg(shell)
+            .arg("-lc")
+            .arg(script)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+        Ok(command.status()?.code().unwrap_or(1))
+    }
+
+    fn run_action_container(
+        &self,
+        image: &str,
+        action_dir: &Path,
+        env: &BTreeMap<String, String>,
+        entrypoint: Option<&str>,
+        args: &[String],
+    ) -> Result<i32> {
+        let mount = format!("{}:/action", action_dir.display());
+        let mut command = Command::new(&self.runtime);
+        command
+            .arg("run")
+            .arg("--rm")
+            .arg("--network")
+            .arg("host")
+            .arg("-v")
+            .arg(mount)
+            .arg("-w")
+            .arg("/action");
+        if let Some(entrypoint) = entrypoint {
+            command.arg("--entrypoint").arg(entrypoint);
+        }
+        for (key, value) in env {
+            command.arg("-e").arg(format!("{key}={value}"));
+        }
+        command.arg(image);
+        for arg in args {
+            command.arg(arg);
+        }
+        command
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+        Ok(command.status()?.code().unwrap_or(1))
+    }
+
+    fn start_service(&self, name: &str, service: &ActionService) -> Result<()> {
+        let mut command = Command::new(&self.runtime);
+        command
+            .arg("run")
+            .arg("-d")
+            .arg("--rm")
+            .arg("--name")
+            .arg(name)
+            .arg("--network")
+            .arg("host");
+        if let Some(options) = service.options.as_deref() {
+            for part in options.split_whitespace() {
+                command.arg(part);
+            }
+        }
+        for (key, value) in &service.env {
+            command.arg("-e").arg(format!("{key}={value}"));
+        }
+        command.arg(&service.image);
+        let status = command.status()?.code().unwrap_or(1);
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(CiError::Message(format!(
+                "failed to start service {} from {}",
+                name, service.image
+            )))
+        }
+    }
+
+    fn stop_container(&self, name: &str) -> Result<()> {
+        let status = Command::new(&self.runtime)
+            .arg("rm")
+            .arg("-f")
+            .arg(name)
+            .status()?
+            .code()
+            .unwrap_or(1);
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(CiError::Message(format!("failed to stop container {name}")))
+        }
+    }
+}
+
+fn order_jobs(jobs: &[ActionsJob]) -> Result<Vec<ActionsJob>> {
+    let map: BTreeMap<_, _> = jobs.iter().map(|job| (job.id.clone(), job.clone())).collect();
+    let mut ordered = Vec::new();
+    let mut visiting = BTreeSet::new();
+    let mut visited = BTreeSet::new();
+
+    for job in jobs {
+        visit_job(&map, &job.id, &mut visiting, &mut visited, &mut ordered)?;
+    }
+
+    Ok(ordered)
+}
+
+fn visit_job(
+    map: &BTreeMap<String, ActionsJob>,
+    id: &str,
+    visiting: &mut BTreeSet<String>,
+    visited: &mut BTreeSet<String>,
+    ordered: &mut Vec<ActionsJob>,
+) -> Result<()> {
+    if visited.contains(id) {
+        return Ok(());
+    }
+    if !visiting.insert(id.to_string()) {
+        return Err(CiError::Message(format!("cyclic job dependency involving `{id}`")));
+    }
+
+    let job = map
+        .get(id)
+        .ok_or_else(|| CiError::Message(format!("unknown job dependency `{id}`")))?;
+    for need in &job.needs {
+        visit_job(map, need, visiting, visited, ordered)?;
+    }
+
+    visiting.remove(id);
+    visited.insert(id.to_string());
+    ordered.push(job.clone());
+    Ok(())
+}
+
+fn parse_path_list(value: &str) -> Vec<String> {
+    value
+        .split(['\n', ','])
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn restore_cache(ctx: &AppContext, key: &str, paths: &[String]) -> Result<()> {
+    let cache_root = ctx.repo.state_dir.join("cache").join(sanitize_component(key));
+    if !cache_root.exists() {
+        return Ok(());
+    }
+
+    for path in paths {
+        let target = ctx.repo.root.join(path);
+        let source = cache_root.join(path);
+        if source.exists() {
+            copy_recursively(&source, &target)?;
+        }
+    }
+    Ok(())
+}
+
+fn save_pending_caches(ctx: &AppContext, cache_state: &CacheState) -> Result<()> {
+    for pending in &cache_state.pending {
+        let cache_root = ctx.repo.state_dir.join("cache").join(sanitize_component(&pending.key));
+        fs::create_dir_all(&cache_root)?;
+        for path in &pending.paths {
+            let source = ctx.repo.root.join(path);
+            if source.exists() {
+                copy_recursively(&source, &cache_root.join(path))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn copy_recursively(source: &Path, target: &Path) -> Result<()> {
+    if source.is_dir() {
+        fs::create_dir_all(target)?;
+        for entry in fs::read_dir(source)? {
+            let entry = entry?;
+            copy_recursively(&entry.path(), &target.join(entry.file_name()))?;
+        }
+        Ok(())
+    } else {
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(source, target)?;
+        Ok(())
+    }
+}
+
+fn evaluate_condition(expr: Option<&str>, ctx: &ExpressionContext<'_>) -> bool {
+    let Some(expr) = expr else {
+        return true;
+    };
+    let expr = trim_expr(expr);
+
+    if expr.contains("||") {
+        return expr.split("||").any(|part| evaluate_condition(Some(part), ctx));
+    }
+    if expr.contains("&&") {
+        return expr.split("&&").all(|part| evaluate_condition(Some(part), ctx));
+    }
+
+    match expr {
+        "true" | "success()" | "always()" => return true,
+        "false" | "failure()" | "cancelled()" => return false,
+        _ => {}
+    }
+
+    if let Some(inner) = expr.strip_prefix("success()") {
+        return inner.trim().is_empty() && ctx.success;
+    }
+
+    if let Some(rest) = expr.strip_prefix("startsWith(").and_then(|value| value.strip_suffix(')')) {
+        let mut parts = rest.splitn(2, ',');
+        let left = parts.next().unwrap_or("").trim();
+        let right = parts.next().unwrap_or("").trim().trim_matches('\'').trim_matches('"');
+        return resolve_expr_value(left, ctx)
+            .map(|value| value.starts_with(right))
+            .unwrap_or(false);
+    }
+
+    if let Some((left, right)) = expr.split_once("==") {
+        return resolve_expr_value(left.trim(), ctx)
+            .map(|value| value == trim_literal(right))
+            .unwrap_or(false);
+    }
+    if let Some((left, right)) = expr.split_once("!=") {
+        return resolve_expr_value(left.trim(), ctx)
+            .map(|value| value != trim_literal(right))
+            .unwrap_or(false);
+    }
+
+    resolve_expr_value(expr, ctx)
+        .map(|value| !value.is_empty() && value != "false")
+        .unwrap_or(false)
+}
+
+fn interpolate_expressions(value: &str, ctx: &ExpressionContext<'_>) -> String {
+    let mut rendered = String::new();
+    let mut remaining = value;
+
+    while let Some(start) = remaining.find("${{") {
+        rendered.push_str(&remaining[..start]);
+        let after = &remaining[start + 3..];
+        if let Some(end) = after.find("}}") {
+            let expr = after[..end].trim();
+            rendered.push_str(&resolve_expr_value(expr, ctx).unwrap_or_default());
+            remaining = &after[end + 2..];
+        } else {
+            rendered.push_str(&remaining[start..]);
+            return rendered;
+        }
+    }
+
+    rendered.push_str(remaining);
+    rendered
+}
+
+fn resolve_expr_value(expr: &str, ctx: &ExpressionContext<'_>) -> Option<String> {
+    match trim_expr(expr) {
+        "github.ref" | "gitea.ref" => ctx.branch.map(|branch| format!("refs/heads/{branch}")),
+        "github.ref_name" | "gitea.ref_name" => ctx.branch.map(ToOwned::to_owned),
+        "github.event_name" | "gitea.event_name" => Some(canonical_events(ctx.event).last().cloned().unwrap_or_else(|| ctx.event.to_string())),
+        "github.workspace" | "gitea.workspace" => ctx.env.get("CI_REPO").cloned(),
+        value if value.starts_with("env.") => ctx.env.get(value.trim_start_matches("env.")).cloned(),
+        value if value.starts_with("matrix.") => ctx.matrix.get(value.trim_start_matches("matrix.")).cloned(),
+        value if value.starts_with("inputs.") => ctx.inputs.get(value.trim_start_matches("inputs.")).cloned(),
+        value => Some(trim_literal(value)),
+    }
+}
+
+fn trim_expr(expr: &str) -> &str {
+    let trimmed = expr.trim();
+    trimmed
+        .strip_prefix("${{")
+        .and_then(|value| value.strip_suffix("}}"))
+        .map(str::trim)
+        .unwrap_or(trimmed)
+}
+
+fn trim_literal(value: &str) -> String {
+    value
+        .trim()
+        .trim_matches('\'')
+        .trim_matches('"')
+        .to_string()
+}
+
+fn strip_action_ref(value: &str) -> &str {
+    value.split('@').next().unwrap_or(value)
+}
+
+struct RemoteActionSpec {
+    owner: String,
+    repo: String,
+    subpath: String,
+    reference: String,
+}
+
+fn parse_remote_action(value: &str) -> Result<RemoteActionSpec> {
+    let (repo_path, reference) = value
+        .split_once('@')
+        .ok_or_else(|| CiError::Message(format!("remote action `{value}` is missing `@ref`")))?;
+    let mut parts = repo_path.split('/');
+    let owner = parts
+        .next()
+        .ok_or_else(|| CiError::Message(format!("invalid action reference `{value}`")))?;
+    let repo = parts
+        .next()
+        .ok_or_else(|| CiError::Message(format!("invalid action reference `{value}`")))?;
+    let subpath = parts.collect::<Vec<_>>().join("/");
+    Ok(RemoteActionSpec {
+        owner: owner.to_string(),
+        repo: repo.to_string(),
+        subpath,
+        reference: reference.to_string(),
+    })
+}
+
+#[derive(Debug, Deserialize)]
+struct ActionMetadata {
+    runs: RawActionRuns,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawActionRuns {
+    using: String,
+    main: Option<String>,
+    image: Option<String>,
+    dockerfile: Option<String>,
+    entrypoint: Option<String>,
+    args: Option<Vec<String>>,
+    #[serde(default)]
+    steps: Vec<RawActionMetadataStep>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct RawActionMetadataStep {
+    name: Option<String>,
+    #[serde(rename = "if")]
+    if_condition: Option<String>,
+    run: Option<String>,
+    uses: Option<String>,
+    shell: Option<String>,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
+    #[serde(default)]
+    with: BTreeMap<String, String>,
+    #[serde(rename = "working-directory")]
+    working_directory: Option<String>,
+    #[serde(rename = "continue-on-error", default)]
+    continue_on_error: bool,
+}
+
+#[derive(Clone, Debug)]
+enum ActionMetadataStep {
+    Run(ActionRunStep),
+    Uses(ActionUsesStep),
+}
+
+enum ActionRuns {
+    Composite {
+        steps: Vec<ActionMetadataStep>,
+    },
+    Docker {
+        image: Option<String>,
+        dockerfile: Option<String>,
+        entrypoint: Option<String>,
+        args: Option<Vec<String>>,
+    },
+    Node {
+        main: String,
+    },
+}
+
+fn load_action_metadata(dir: &Path) -> Result<ActionDefinition> {
+    for name in ["action.yml", "action.yaml"] {
+        let path = dir.join(name);
+        if path.exists() {
+            let ActionMetadata { runs } = serde_yaml::from_str(&fs::read_to_string(path)?)?;
+            let RawActionRuns {
+                using,
+                main,
+                image,
+                dockerfile,
+                entrypoint,
+                args,
+                steps: raw_steps,
+            } = runs;
+            let steps = raw_steps
+                .into_iter()
+                .enumerate()
+                .map(|(index, step)| {
+                    let name = step
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| step.uses.clone().unwrap_or_else(|| format!("step-{}", index + 1)));
+                    match (step.run, step.uses) {
+                        (Some(run), None) => Ok(ActionMetadataStep::Run(ActionRunStep {
+                            name,
+                            run,
+                            shell: step.shell,
+                            env: step.env,
+                            if_condition: step.if_condition,
+                            working_directory: step.working_directory,
+                            continue_on_error: step.continue_on_error,
+                            timeout_minutes: None,
+                        })),
+                        (None, Some(uses)) => Ok(ActionMetadataStep::Uses(ActionUsesStep {
+                            name,
+                            uses,
+                            with: step.with,
+                            env: step.env,
+                            if_condition: step.if_condition,
+                            working_directory: step.working_directory,
+                            continue_on_error: step.continue_on_error,
+                        })),
+                        _ => Err(CiError::Message(format!(
+                            "action {} has a composite step without exactly one of `run` or `uses`",
+                            dir.display()
+                        ))),
+                    }
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let runs = match using.as_str() {
+                "composite" => ActionRuns::Composite { steps },
+                "docker" => ActionRuns::Docker {
+                    image,
+                    dockerfile,
+                    entrypoint,
+                    args,
+                },
+                value if value.starts_with("node") => ActionRuns::Node {
+                    main: main
+                        .ok_or_else(|| CiError::Message(format!("node action {} is missing runs.main", dir.display())))?,
+                },
+                other => {
+                    return Err(CiError::Message(format!(
+                        "action {} uses unsupported runner `{other}`",
+                        dir.display()
+                    )))
+                }
+            };
+            return Ok(ActionDefinition { runs });
+        }
+    }
+
+    Err(CiError::Message(format!(
+        "no action.yml or action.yaml found in {}",
+        dir.display()
+    )))
+}
+
+struct ActionDefinition {
+    runs: ActionRuns,
+}
