@@ -465,7 +465,8 @@ fn run_native_yaml(
         ctx.output.info(format!("--> {step_name}"));
 
         let condition_env = merged_env(base_env, &resolved.env, &step.env);
-        let expr = ExpressionContext {
+        let mut condition_inputs = BTreeMap::new();
+        let preliminary_expr = ExpressionContext {
             event: base_env
                 .get("CI_EVENT")
                 .map(String::as_str)
@@ -477,6 +478,17 @@ fn run_native_yaml(
             inputs: &empty_inputs,
             success: workflow_failure == 0 && !previous_failed,
             previous_failed,
+        };
+        if step.uses.is_some() {
+            condition_inputs = native_step_inputs(step, &preliminary_expr);
+        }
+        let expr = ExpressionContext {
+            inputs: if condition_inputs.is_empty() {
+                &empty_inputs
+            } else {
+                &condition_inputs
+            },
+            ..preliminary_expr
         };
         if !evaluate_condition(step.if_condition.as_deref(), &expr) {
             ctx.output
@@ -576,6 +588,12 @@ fn run_native_uses_step(
             resolved.path.display()
         ))
     })
+}
+
+fn native_step_inputs(step: &NativeStep, expr: &ExpressionContext<'_>) -> BTreeMap<String, String> {
+    let mut inputs = interpolate_map(&step.extra, expr);
+    inputs.extend(interpolate_map(&step.with, expr));
+    inputs
 }
 
 fn run_container_workflow(
@@ -1315,11 +1333,12 @@ fn run_export_step(root: &Path, rendered_with: &BTreeMap<String, String>) -> Res
         ));
     }
 
+    let replace = input_bool(rendered_with, &["replace", "overwrite"], false);
     let sources = expand_export_sources(root, &specs)?;
     let destination_path = resolve_export_path(root, destination);
     for source in &sources {
         let target = export_target_path(source, &destination_path, destination, sources.len())?;
-        copy_recursively(source, &target)?;
+        copy_export_path(source, &target, replace)?;
     }
     Ok(0)
 }
@@ -1551,6 +1570,28 @@ fn export_target_path(
         ))
     })?;
     Ok(destination.join(name))
+}
+
+fn copy_export_path(source: &Path, target: &Path, replace: bool) -> Result<()> {
+    match fs::symlink_metadata(target) {
+        Ok(metadata) if replace => {
+            if metadata.file_type().is_dir() {
+                fs::remove_dir_all(target)?;
+            } else {
+                fs::remove_file(target)?;
+            }
+        }
+        Ok(_) => {
+            return Err(CiError::Message(format!(
+                "export target already exists: {}; set `replace: true` or `overwrite: true`",
+                target.display()
+            )));
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.into()),
+    }
+
+    copy_recursively(source, target)
 }
 
 fn input_value<'a>(values: &'a BTreeMap<String, String>, keys: &[&str]) -> Option<&'a str> {
@@ -2243,6 +2284,7 @@ fn resolve_expr_value(expr: &str, ctx: &ExpressionContext<'_>) -> Option<String>
         value if value.starts_with("inputs.") => {
             ctx.inputs.get(value.trim_start_matches("inputs.")).cloned()
         }
+        value if ctx.inputs.contains_key(value) => ctx.inputs.get(value).cloned(),
         value => Some(trim_literal(value)),
     }
 }
@@ -2560,6 +2602,24 @@ mod tests {
         }
     }
 
+    fn expr_ctx_with_inputs<'a>(
+        root: &'a Path,
+        env: &'a BTreeMap<String, String>,
+        inputs: &'a BTreeMap<String, String>,
+    ) -> ExpressionContext<'a> {
+        let empty = Box::leak(Box::new(BTreeMap::new()));
+        ExpressionContext {
+            event: "manual",
+            branch: None,
+            root,
+            env,
+            matrix: empty,
+            inputs,
+            success: true,
+            previous_failed: false,
+        }
+    }
+
     #[test]
     fn native_condition_defaults_to_success() {
         let temp = TempDir::new().expect("tempdir");
@@ -2641,6 +2701,21 @@ mod tests {
     }
 
     #[test]
+    fn exists_conditions_can_reference_action_inputs() {
+        let temp = TempDir::new().expect("tempdir");
+        fs::create_dir_all(temp.path().join("target/release")).expect("create dir");
+        fs::write(temp.path().join("target/release/ci"), "bin").expect("write file");
+
+        let env = BTreeMap::new();
+        let mut inputs = BTreeMap::new();
+        inputs.insert("src".to_string(), "target/release/ci".to_string());
+
+        let ctx = expr_ctx_with_inputs(temp.path(), &env, &inputs);
+        assert!(evaluate_condition(Some("exists(src)"), &ctx));
+        assert!(evaluate_condition(Some("exists(inputs.src)"), &ctx));
+    }
+
+    #[test]
     fn cleanup_ignored_mode_parses_supported_values() {
         assert_eq!(
             parse_cleanup_ignored_mode("cleanup", None).expect("default ignored mode"),
@@ -2682,6 +2757,38 @@ mod tests {
         assert_eq!(
             fs::read_to_string(temp.path().join("dist/ci")).expect("read exported file"),
             "bin"
+        );
+    }
+
+    #[test]
+    fn export_existing_target_requires_replace_or_overwrite() {
+        let temp = TempDir::new().expect("tempdir");
+        fs::create_dir_all(temp.path().join("target/release")).expect("create target");
+        fs::create_dir_all(temp.path().join("dist")).expect("create dist");
+        fs::write(temp.path().join("target/release/ci"), "new").expect("write source");
+        fs::write(temp.path().join("dist/ci"), "old").expect("write existing");
+
+        let mut inputs = BTreeMap::new();
+        inputs.insert("src".to_string(), "target/release/ci".to_string());
+        inputs.insert("dest".to_string(), "dist/ci".to_string());
+
+        let err = run_export_step(temp.path(), &inputs).expect_err("export should fail");
+        assert!(err
+            .to_string()
+            .contains("set `replace: true` or `overwrite: true`"));
+        assert_eq!(
+            fs::read_to_string(temp.path().join("dist/ci")).expect("read existing file"),
+            "old"
+        );
+
+        inputs.insert("overwrite".to_string(), "true".to_string());
+        assert_eq!(
+            run_export_step(temp.path(), &inputs).expect("export should overwrite"),
+            0
+        );
+        assert_eq!(
+            fs::read_to_string(temp.path().join("dist/ci")).expect("read overwritten file"),
+            "new"
         );
     }
 

@@ -21,3 +21,9 @@ steps:
     run: cargo build --release
   - if: missing(cargo)
     run: toolbox run cargo build --release
+
+  - if: exists(src)
+    use: export
+    src: target/release/ci
+    dest: ~/.local/bin/
+    replace: true
