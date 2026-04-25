@@ -36,12 +36,12 @@ steps:
     container: false
     use: export
     src: target/release/ci
-    dest: ~/.local/bin/ci.$CI_ARCH
+    dest: '~/.local/bin/ci.${{ env.CI_ARCH }}'
     replace: true
 
   - use: link
     if: arch(x64)
-    src: ~/.local/bin/ci.$CI_ARCH
+    src: '~/.local/bin/ci.${{ env.CI_ARCH }}'
     dest: ~/.local/bin/ci
     replace: true
 
