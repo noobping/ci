@@ -1,0 +1,97 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: lint
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: test
+        run: cargo test --all --verbose
+
+      - name: build
+        run: cargo build --release --verbose
+
+      - name: package binary
+        run: |
+          mkdir -p dist
+          cp target/release/ci dist/ci-linux-${{ matrix.arch }}
+          chmod +x dist/ci-linux-${{ matrix.arch }}
+
+      - name: upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-linux-${{ matrix.arch }}
+          path: dist/ci-linux-${{ matrix.arch }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: download binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: move continuous tag
+        run: |
+          git tag -f continuous "$GITHUB_SHA"
+          git push -f origin refs/tags/continuous
+
+      - name: create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view continuous >/dev/null 2>&1 && \
+            gh release edit continuous \
+              --title "Continuous Release" \
+              --notes "Latest build from main: $GITHUB_SHA" \
+              --prerelease \
+              --latest=false || \
+            gh release create continuous \
+              --title "Continuous Release" \
+              --notes "Latest build from main: $GITHUB_SHA" \
+              --prerelease \
+              --latest=false
+
+      - name: upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload continuous dist/ci-linux-amd64 dist/ci-linux-arm64 --clobber
