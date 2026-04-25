@@ -9,8 +9,8 @@ use walkdir::WalkDir;
 
 use crate::actions::{self, ActionsProvider, ActionsWorkflow};
 use crate::config::{
-    ArchFilter, Architecture, ArtifactConfig, BranchConfig, ContainerConfig, EventFilter,
-    ExecutionConfig, ResolvedConfig, WorkflowOverride,
+    ArchFilter, ArtifactConfig, BranchConfig, ContainerConfig, EventFilter, ExecutionConfig,
+    ResolvedConfig, WorkflowOverride,
 };
 use crate::error::Result;
 use crate::repo::RepoInfo;
@@ -349,7 +349,6 @@ pub fn select_workflows(
     config: &ResolvedConfig,
     requested_name: Option<&str>,
     event: &str,
-    arch: &Architecture,
     branch: Option<&str>,
     respect_branches: bool,
 ) -> Vec<WorkflowMatch> {
@@ -366,9 +365,6 @@ pub fn select_workflows(
                     return None;
                 }
                 if automation && !branch_allowed(config, &resolved.branches, branch) {
-                    return None;
-                }
-                if !arch_allowed(&resolved.arch, arch) {
                     return None;
                 }
                 return Some(WorkflowMatch {
@@ -416,12 +412,6 @@ pub fn select_workflows(
 
             if automation && !branch_allowed(config, &resolved.branches, branch) {
                 return None;
-            }
-            if !arch_allowed(&resolved.arch, arch) {
-                return None;
-            }
-            if !resolved.arch.is_empty() {
-                reasons.push(format!("workflow arch includes `{arch}`"));
             }
 
             Some(WorkflowMatch {
@@ -481,23 +471,21 @@ pub fn explain_subject(
             }
             let branches = resolved.branches.effective(&config.defaults);
             lines.push(format!("  branches: {:?}", branches));
-            let arch = resolved.arch.to_vec();
-            if !arch.is_empty() {
+            let container_arch = resolved.container.arch.to_vec();
+            if !container_arch.is_empty() {
                 lines.push(format!(
-                    "  arch: {:?}",
-                    arch.iter().map(ToString::to_string).collect::<Vec<_>>()
+                    "  container arch: {:?}",
+                    container_arch
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
                 ));
             }
         }
         return lines;
     }
 
-    let matches = config
-        .defaults
-        .arch
-        .iter()
-        .flat_map(|arch| select_workflows(workflows, config, None, subject, arch, branch, true))
-        .collect::<Vec<_>>();
+    let matches = select_workflows(workflows, config, None, subject, branch, true);
     if matches.is_empty() {
         lines.push(format!("No workflows matched `{subject}`"));
         return lines;
@@ -541,10 +529,6 @@ fn branch_allowed(config: &ResolvedConfig, branches: &BranchConfig, branch: Opti
         Some(branch) => allowed.iter().any(|item| item == branch),
         None => true,
     }
-}
-
-fn arch_allowed(arch_filter: &ArchFilter, arch: &Architecture) -> bool {
-    arch_filter.allows(arch)
 }
 
 fn discover_native(repo: &RepoInfo, workflows: &mut Vec<Workflow>) -> Result<()> {
@@ -891,18 +875,20 @@ steps:
     }
 
     #[test]
-    fn native_workflow_parses_arch_aliases() {
+    fn native_workflow_parses_container_arch_aliases() {
         let file: NativeWorkflowFile = serde_yaml::from_str(
             r#"
-arch:
-  - amd64
-  - aarch64
+container:
+  arch:
+    - amd64
+    - aarch64
 steps:
   - run: echo ok
 "#,
         )
         .expect("parse workflow");
         let arch = file
+            .container
             .arch
             .to_vec()
             .into_iter()

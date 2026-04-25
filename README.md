@@ -78,9 +78,13 @@ name: build
 on:
   - manual
   - pre-push
-arch:
-  - x64
-  - arm64
+container:
+  type: rust
+  arch:
+    - x64
+    - arm64
+  packages:
+    - htop
 steps:
   - name: Checkout
     uses: checkout
@@ -202,7 +206,7 @@ defaults:
     - arm64
 ```
 
-`--arch` accepts comma-separated values and can be repeated, so `--arch x64,arm64` and `--arch x64 --arch arm64` are equivalent. `defaults.arch` accepts either one value or a YAML list. Workflow `arch` filters accept aliases such as `amd64`, `x64`, `x86_64`, `arm64`, and `aarch64`. When a container workflow or action does not set `container.platform`, `ci` maps the selected arch to a podman/docker platform such as `linux/amd64` or `linux/arm64`.
+`--arch` accepts comma-separated values and can be repeated, so `--arch x64,arm64` and `--arch x64 --arch arm64` are equivalent. `defaults.arch` accepts either one value or a YAML list. Architecture is an execution setting. Native YAML workflows can run inside a generated container with `container.type`, `container.arch`, and `container.packages`. `container.type: rust` uses the official Rust image, while omitted/`auto` detects Rust projects and otherwise uses a general Debian image. When a container workflow, native container workflow, or action does not set `container.platform`, `ci` maps the selected arch to a podman/docker platform such as `linux/amd64` or `linux/arm64`.
 
 ## Actions compatibility
 

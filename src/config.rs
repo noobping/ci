@@ -175,9 +175,24 @@ pub struct ExecutionConfig {
     pub shell: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ContainerType {
+    Auto,
+    General,
+    Rust,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ContainerConfig {
+    #[serde(rename = "type")]
+    pub kind: Option<ContainerType>,
+    pub image: Option<String>,
     pub platform: Option<String>,
+    #[serde(default)]
+    pub arch: ArchFilter,
+    #[serde(default)]
+    pub packages: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -516,7 +531,15 @@ impl ExecutionConfig {
 impl ContainerConfig {
     pub fn merge(&self, other: &Self) -> Self {
         Self {
+            kind: other.kind.or(self.kind),
+            image: other.image.clone().or_else(|| self.image.clone()),
             platform: other.platform.clone().or_else(|| self.platform.clone()),
+            arch: self.arch.merged(&other.arch),
+            packages: if other.packages.is_empty() {
+                self.packages.clone()
+            } else {
+                other.packages.clone()
+            },
         }
     }
 }
@@ -531,7 +554,7 @@ pub fn path_relative_to(base: &Path, path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::ConfigFile;
+    use super::{ConfigFile, ContainerType};
 
     #[test]
     fn defaults_arch_accepts_single_value_or_list() {
@@ -571,5 +594,36 @@ defaults:
                 .collect::<Vec<_>>(),
             vec!["x64", "arm64"]
         );
+    }
+
+    #[test]
+    fn container_config_accepts_type_arch_and_packages() {
+        let file: ConfigFile = serde_yaml::from_str(
+            r#"
+workflows:
+  build:
+    container:
+      type: rust
+      arch:
+        - amd64
+        - aarch64
+      packages:
+        - htop
+"#,
+        )
+        .expect("parse container config");
+        let container = &file.workflows.get("build").expect("workflow").container;
+
+        assert_eq!(container.kind, Some(ContainerType::Rust));
+        assert_eq!(
+            container
+                .arch
+                .to_vec()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            vec!["x64", "arm64"]
+        );
+        assert_eq!(container.packages, vec!["htop"]);
     }
 }

@@ -17,7 +17,7 @@ use crate::actions::{
 };
 use crate::artifacts::ArtifactSession;
 use crate::cli::{GlobalOptions, HookArgs, InitArgs, ListArgs, RunArgs, SelfArgs};
-use crate::config::{Architecture, ContainerRuntime, ResolvedConfig};
+use crate::config::{Architecture, ContainerRuntime, ContainerType, ResolvedConfig};
 use crate::error::{CiError, Result};
 use crate::git::{
     command_exists, preferred_container_runtime, sanitize_component, CleanIgnoredMode, GitService,
@@ -80,18 +80,40 @@ impl AppContext {
 }
 
 #[derive(Clone, Debug)]
-struct RunInvocation {
+struct RunRequest {
     workflow: Option<String>,
     event: String,
     dry_run: bool,
     keep_going: bool,
-    arch: Architecture,
+    arches: Vec<Architecture>,
+    arch_overridden: bool,
     container_runtime: ContainerRuntime,
     respect_branches: bool,
     recursive_checkout: bool,
     lock: bool,
     hook_args: Vec<String>,
     branch: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct RunInvocation {
+    event: String,
+    arch: Architecture,
+    container_runtime: ContainerRuntime,
+    hook_args: Vec<String>,
+    branch: Option<String>,
+}
+
+impl RunRequest {
+    fn invocation_for_arch(&self, arch: Architecture) -> RunInvocation {
+        RunInvocation {
+            event: self.event.clone(),
+            arch,
+            container_runtime: self.container_runtime,
+            hook_args: self.hook_args.clone(),
+            branch: self.branch.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -120,6 +142,17 @@ struct PendingCache {
 struct StepStatus {
     success: bool,
     previous_failed: bool,
+}
+
+struct NativeContainerExecution<'a> {
+    backend: &'a ContainerBackend,
+    image: String,
+    platform: String,
+}
+
+struct PreparedNativeContainerImage {
+    image: String,
+    build_status: i32,
 }
 
 struct ActionsJobExecution<'a> {
@@ -220,38 +253,27 @@ pub fn cmd_run(ctx: &AppContext, args: &RunArgs) -> Result<i32> {
         !ctx.config.defaults.fail_fast
     };
 
-    let mut last_failure = 0;
-    for arch in &ctx.config.defaults.arch {
-        let invocation = RunInvocation {
-            workflow: if args.all {
-                None
-            } else {
-                args.workflow.clone()
-            },
-            event: args.event.clone(),
-            dry_run: args.dry_run,
-            keep_going,
-            arch: arch.clone(),
-            container_runtime: args
-                .container_runtime
-                .unwrap_or(ctx.config.defaults.container_runtime),
-            respect_branches: args.respect_branches,
-            recursive_checkout: !args.no_recursive_checkout
-                && ctx.config.defaults.recursive_checkout,
-            lock: args.lock,
-            hook_args: Vec::new(),
-            branch: ctx.repo.branch.clone(),
-        };
-        let status = execute_run(ctx, invocation)?;
-        if status != 0 {
-            last_failure = status;
-            if !keep_going {
-                return Ok(status);
-            }
-        }
-    }
-
-    Ok(last_failure)
+    let request = RunRequest {
+        workflow: if args.all {
+            None
+        } else {
+            args.workflow.clone()
+        },
+        event: args.event.clone(),
+        dry_run: args.dry_run,
+        keep_going,
+        arches: ctx.config.defaults.arch.clone(),
+        arch_overridden: !ctx.global.arch.is_empty(),
+        container_runtime: args
+            .container_runtime
+            .unwrap_or(ctx.config.defaults.container_runtime),
+        respect_branches: args.respect_branches,
+        recursive_checkout: !args.no_recursive_checkout && ctx.config.defaults.recursive_checkout,
+        lock: args.lock,
+        hook_args: Vec::new(),
+        branch: ctx.repo.branch.clone(),
+    };
+    execute_run(ctx, request)
 }
 
 pub fn cmd_hook(ctx: &AppContext, args: &HookArgs) -> Result<i32> {
@@ -261,31 +283,21 @@ pub fn cmd_hook(ctx: &AppContext, args: &HookArgs) -> Result<i32> {
 
     let branch = branch_from_hook(ctx, &args.hook, &args.hook_args)?;
     let keep_going = !ctx.config.defaults.fail_fast;
-    let mut last_failure = 0;
-    for arch in &ctx.config.defaults.arch {
-        let invocation = RunInvocation {
-            workflow: None,
-            event: args.hook.clone(),
-            dry_run: false,
-            keep_going,
-            arch: arch.clone(),
-            container_runtime: ctx.config.defaults.container_runtime,
-            respect_branches: true,
-            recursive_checkout: ctx.config.defaults.recursive_checkout,
-            lock: true,
-            hook_args: args.hook_args.clone(),
-            branch: branch.clone(),
-        };
-        let status = execute_run(ctx, invocation)?;
-        if status != 0 {
-            last_failure = status;
-            if !keep_going {
-                return Ok(status);
-            }
-        }
-    }
-
-    Ok(last_failure)
+    let request = RunRequest {
+        workflow: None,
+        event: args.hook.clone(),
+        dry_run: false,
+        keep_going,
+        arches: ctx.config.defaults.arch.clone(),
+        arch_overridden: !ctx.global.arch.is_empty(),
+        container_runtime: ctx.config.defaults.container_runtime,
+        respect_branches: true,
+        recursive_checkout: ctx.config.defaults.recursive_checkout,
+        lock: true,
+        hook_args: args.hook_args.clone(),
+        branch: branch.clone(),
+    };
+    execute_run(ctx, request)
 }
 
 pub fn cmd_init(ctx: &AppContext, args: &InitArgs) -> Result<i32> {
@@ -316,16 +328,16 @@ pub fn cmd_self(ctx: &AppContext, _args: &SelfArgs) -> Result<i32> {
     Ok(0)
 }
 
-fn execute_run(ctx: &AppContext, invocation: RunInvocation) -> Result<i32> {
+fn execute_run(ctx: &AppContext, request: RunRequest) -> Result<i32> {
     ctx.repo.ensure_state_dirs()?;
 
-    let _lock = if invocation.lock {
+    let _lock = if request.lock {
         Some(RunLock::acquire(&ctx.repo.state_dir.join("lock"))?)
     } else {
         None
     };
 
-    if invocation.recursive_checkout {
+    if request.recursive_checkout {
         ctx.git.ensure_submodules(&ctx.repo)?;
     }
 
@@ -333,15 +345,14 @@ fn execute_run(ctx: &AppContext, invocation: RunInvocation) -> Result<i32> {
     let matches = select_workflows(
         &workflows,
         &ctx.config,
-        invocation.workflow.as_deref(),
-        &invocation.event,
-        &invocation.arch,
-        invocation.branch.as_deref(),
-        invocation.respect_branches,
+        request.workflow.as_deref(),
+        &request.event,
+        request.branch.as_deref(),
+        request.respect_branches,
     );
 
     if matches.is_empty() {
-        if let Some(name) = &invocation.workflow {
+        if let Some(name) = &request.workflow {
             return Ok(if workflows.iter().any(|workflow| workflow.name == *name) {
                 0
             } else {
@@ -349,19 +360,21 @@ fn execute_run(ctx: &AppContext, invocation: RunInvocation) -> Result<i32> {
             });
         }
         ctx.output
-            .verbose(format!("no workflows matched event `{}`", invocation.event));
+            .verbose(format!("no workflows matched event `{}`", request.event));
         return Ok(0);
     }
 
-    if invocation.dry_run {
+    if request.dry_run {
         for item in &matches {
-            println!(
-                "would run {} [{}] for {} because {}",
-                item.workflow.name,
-                provider_name(&item.workflow.provider),
-                invocation.arch,
-                item.reasons.join("; ")
-            );
+            for arch in workflow_execution_arches(&request, &item.resolved) {
+                println!(
+                    "would run {} [{}] for {} because {}",
+                    item.workflow.name,
+                    provider_name(&item.workflow.provider),
+                    arch,
+                    item.reasons.join("; ")
+                );
+            }
         }
         return Ok(0);
     }
@@ -369,27 +382,50 @@ fn execute_run(ctx: &AppContext, invocation: RunInvocation) -> Result<i32> {
     let run_id = new_run_id();
     let mut artifacts = ArtifactSession::new(
         &ctx.repo,
-        &invocation.event,
-        invocation.branch.as_deref(),
+        &request.event,
+        request.branch.as_deref(),
         &run_id,
         ctx.output.clone(),
     )?;
     let mut last_failure = 0;
 
     for item in matches {
-        ctx.output.info(format!("==> {}", item.workflow.name));
-        let status = run_one_workflow(ctx, &invocation, &item, &run_id, &mut artifacts)?;
-        if status != 0 {
-            last_failure = status;
-            if !invocation.keep_going {
-                artifacts.finish()?;
-                return Ok(status);
+        let arches = workflow_execution_arches(&request, &item.resolved);
+        let show_arch = arches.len() > 1 || !item.resolved.container.arch.is_empty();
+        for arch in arches {
+            if show_arch {
+                ctx.output
+                    .info(format!("==> {} ({arch})", item.workflow.name));
+            } else {
+                ctx.output.info(format!("==> {}", item.workflow.name));
+            }
+            let invocation = request.invocation_for_arch(arch);
+            let status = run_one_workflow(ctx, &invocation, &item, &run_id, &mut artifacts)?;
+            if status != 0 {
+                last_failure = status;
+                if !request.keep_going {
+                    artifacts.finish()?;
+                    return Ok(status);
+                }
             }
         }
     }
 
     artifacts.finish()?;
     Ok(last_failure)
+}
+
+fn workflow_execution_arches(
+    request: &RunRequest,
+    resolved: &ResolvedWorkflow,
+) -> Vec<Architecture> {
+    if !request.arch_overridden {
+        let container_arch = resolved.container.arch.to_vec();
+        if !container_arch.is_empty() {
+            return container_arch;
+        }
+    }
+    request.arches.clone()
 }
 
 fn run_one_workflow(
@@ -404,14 +440,28 @@ fn run_one_workflow(
         WorkflowSource::Executable(_) => {
             run_executable(ctx, invocation, &item.resolved, &base_env)?
         }
-        WorkflowSource::NativeYaml(native) => run_native_yaml(
-            ctx,
-            invocation,
-            &item.resolved,
-            &native.steps,
-            &base_env,
-            artifacts,
-        )?,
+        WorkflowSource::NativeYaml(native) => {
+            if native_container_enabled(&item.resolved) {
+                run_native_yaml_containerized(
+                    ctx,
+                    invocation,
+                    &item.resolved,
+                    &native.steps,
+                    &base_env,
+                    artifacts,
+                )?
+            } else {
+                run_native_yaml(
+                    ctx,
+                    invocation,
+                    &item.resolved,
+                    &native.steps,
+                    &base_env,
+                    artifacts,
+                    None,
+                )?
+            }
+        }
         WorkflowSource::Container(_) => {
             run_container_workflow(ctx, invocation, &item.resolved, &base_env)?
         }
@@ -472,6 +522,37 @@ fn run_executable(
     Ok(command.status()?.code().unwrap_or(1))
 }
 
+fn run_native_yaml_containerized(
+    ctx: &AppContext,
+    invocation: &RunInvocation,
+    resolved: &ResolvedWorkflow,
+    steps: &[NativeStep],
+    base_env: &BTreeMap<String, String>,
+    artifacts: &mut ArtifactSession,
+) -> Result<i32> {
+    let backend = ContainerBackend::detect(invocation.container_runtime)?;
+    let platform = container_platform(resolved, &invocation.arch);
+    let image = prepare_native_container_image(ctx, &backend, resolved, steps, &platform)?;
+    if image.build_status != 0 {
+        return Ok(image.build_status);
+    }
+
+    let container = NativeContainerExecution {
+        backend: &backend,
+        image: image.image,
+        platform,
+    };
+    run_native_yaml(
+        ctx,
+        invocation,
+        resolved,
+        steps,
+        base_env,
+        artifacts,
+        Some(&container),
+    )
+}
+
 fn run_native_yaml(
     ctx: &AppContext,
     _invocation: &RunInvocation,
@@ -479,6 +560,7 @@ fn run_native_yaml(
     steps: &[NativeStep],
     base_env: &BTreeMap<String, String>,
     artifacts: &mut ArtifactSession,
+    container: Option<&NativeContainerExecution<'_>>,
 ) -> Result<i32> {
     let mut previous_failed = false;
     let mut workflow_failure = 0;
@@ -542,18 +624,27 @@ fn run_native_yaml(
                 .or(resolved.execution.shell.as_deref())
                 .unwrap_or(&ctx.config.defaults.shell);
             let script = interpolate_expressions(run, &expr);
-            run_shell(
-                shell,
-                &script,
-                &resolve_workdir(
-                    &ctx.repo.root,
-                    step.working_directory
-                        .as_deref()
-                        .map(Path::new)
-                        .or(resolved.execution.workspace.as_deref()),
-                ),
-                &condition_env,
-            )?
+            let workdir = resolve_workdir(
+                &ctx.repo.root,
+                step.working_directory
+                    .as_deref()
+                    .map(Path::new)
+                    .or(resolved.execution.workspace.as_deref()),
+            );
+            if let Some(container) = container {
+                container.backend.run_shell(&ContainerShellSpec {
+                    image: &container.image,
+                    repo_root: &ctx.repo.root,
+                    shell,
+                    script: &script,
+                    env: &condition_env,
+                    workdir: &workdir,
+                    platform: Some(&container.platform),
+                    options: None,
+                })?
+            } else {
+                run_shell(shell, &script, &workdir, &condition_env)?
+            }
         } else {
             return Err(CiError::Message(format!(
                 "{} native step is missing `run` and `use`",
@@ -567,6 +658,141 @@ fn run_native_yaml(
     }
     save_pending_caches(ctx, &cache_state)?;
     Ok(workflow_failure)
+}
+
+fn native_container_enabled(resolved: &ResolvedWorkflow) -> bool {
+    resolved.container.kind.is_some()
+        || resolved.container.image.is_some()
+        || resolved.container.platform.is_some()
+        || !resolved.container.arch.is_empty()
+        || !resolved.container.packages.is_empty()
+}
+
+fn prepare_native_container_image(
+    ctx: &AppContext,
+    backend: &ContainerBackend,
+    resolved: &ResolvedWorkflow,
+    steps: &[NativeStep],
+    platform: &str,
+) -> Result<PreparedNativeContainerImage> {
+    let base_image = native_container_base_image(ctx, resolved, steps);
+    validate_container_image_ref(&base_image)?;
+    if resolved.container.packages.is_empty() {
+        return Ok(PreparedNativeContainerImage {
+            image: base_image,
+            build_status: 0,
+        });
+    }
+
+    validate_container_packages(&resolved.container.packages)?;
+    let tag = format!(
+        "ci-{}-{}",
+        sanitize_component(&resolved.name),
+        sanitize_component(platform)
+    );
+    let dir = ctx.repo.state_dir.join("containers");
+    fs::create_dir_all(&dir)?;
+    let file = dir.join(format!("{tag}.Containerfile"));
+    fs::write(
+        &file,
+        generated_native_containerfile(&base_image, &resolved.container.packages),
+    )?;
+    let build_status = backend.build(&file, &dir, &tag, Some(platform))?;
+    Ok(PreparedNativeContainerImage {
+        image: tag,
+        build_status,
+    })
+}
+
+fn native_container_base_image(
+    ctx: &AppContext,
+    resolved: &ResolvedWorkflow,
+    steps: &[NativeStep],
+) -> String {
+    if let Some(image) = &resolved.container.image {
+        return image.clone();
+    }
+
+    match resolved.container.kind.unwrap_or(ContainerType::Auto) {
+        ContainerType::Rust => "docker.io/library/rust:latest".to_string(),
+        ContainerType::General => "docker.io/library/debian:stable-slim".to_string(),
+        ContainerType::Auto if native_workflow_looks_like_rust(ctx, steps) => {
+            "docker.io/library/rust:latest".to_string()
+        }
+        ContainerType::Auto => "docker.io/library/debian:stable-slim".to_string(),
+    }
+}
+
+fn native_workflow_looks_like_rust(ctx: &AppContext, steps: &[NativeStep]) -> bool {
+    ctx.repo.root.join("Cargo.toml").exists()
+        || steps.iter().any(|step| {
+            step.run
+                .as_deref()
+                .map(|run| run.split_whitespace().any(|part| part == "cargo"))
+                .unwrap_or(false)
+        })
+}
+
+fn validate_container_packages(packages: &[String]) -> Result<()> {
+    for package in packages {
+        if package.trim().is_empty() {
+            return Err(CiError::Usage(
+                "container package names must not be empty".to_string(),
+            ));
+        }
+        if package.contains('\0') || package.contains('\n') || package.contains('\r') {
+            return Err(CiError::Usage(format!(
+                "container package `{package}` contains unsupported control characters"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_container_image_ref(image: &str) -> Result<()> {
+    if image.trim().is_empty() {
+        return Err(CiError::Usage(
+            "container image must not be empty".to_string(),
+        ));
+    }
+    if image.contains('\0') || image.chars().any(char::is_whitespace) {
+        return Err(CiError::Usage(
+            "container image contains unsupported whitespace or control characters".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn generated_native_containerfile(base_image: &str, packages: &[String]) -> String {
+    let packages = packages
+        .iter()
+        .map(|package| sh_single_quote(package))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        "FROM {base_image}\n\
+         RUN set -eux; \\\n\
+             if command -v apt-get >/dev/null 2>&1; then \\\n\
+                 apt-get update; \\\n\
+                 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends {packages}; \\\n\
+                 rm -rf /var/lib/apt/lists/*; \\\n\
+             elif command -v dnf >/dev/null 2>&1; then \\\n\
+                 dnf install -y {packages}; \\\n\
+                 dnf clean all; \\\n\
+             elif command -v apk >/dev/null 2>&1; then \\\n\
+                 apk add --no-cache {packages}; \\\n\
+             elif command -v zypper >/dev/null 2>&1; then \\\n\
+                 zypper --non-interactive install {packages}; \\\n\
+                 zypper clean --all; \\\n\
+             else \\\n\
+                 echo 'no supported package manager found in container image' >&2; \\\n\
+                 exit 1; \\\n\
+             fi\n"
+    )
+}
+
+fn sh_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn run_native_uses_step(
@@ -1765,7 +1991,10 @@ fn workflow_env(
     env.insert("CI_EVENT".to_string(), invocation.event.clone());
     env.insert("CI_HOOK".to_string(), invocation.event.clone());
     env.insert("CI_ARCH".to_string(), invocation.arch.to_string());
-    env.insert("CI_PLATFORM".to_string(), invocation.arch.platform());
+    env.insert(
+        "CI_PLATFORM".to_string(),
+        container_platform(resolved, &invocation.arch),
+    );
     env.insert("CI_REPO".to_string(), ctx.repo.root.display().to_string());
     env.insert(
         "CI_GIT_DIR".to_string(),
