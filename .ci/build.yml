@@ -7,28 +7,28 @@ steps:
     if: exists(cargo)
     run: cargo fmt --check
   - name: format
-    if: missing(cargo)
+    if: missing(cargo) and exists(toolbox)
     run: toolbox run cargo fmt --check
 
   - name: lint
     if: exists(cargo)
     run: cargo clippy --all-targets -- -D warnings
   - name: 
-    if: missing(cargo)
+    if: missing(cargo) and exists(toolbox)
     run: toolbox run cargo clippy --all-targets -- -D warnings
 
   - name: test
     if: exists(cargo)
     run: cargo test --all
   - name: 
-    if: missing(cargo)
+    if: missing(cargo) and exists(toolbox)
     run: toolbox run cargo test --all
 
   - name: build
     if: exists(cargo)
     run: cargo build --release
   - name: 
-    if: missing(cargo)
+    if: missing(cargo) and exists(toolbox)
     run: toolbox run cargo build --release
 
   - name: install executable
