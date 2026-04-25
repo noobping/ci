@@ -43,6 +43,8 @@ pub struct ContainerConfig {
     pub platform: Option<String>,
     #[serde(alias = "working-directory", alias = "working_directory")]
     pub workdir: Option<String>,
+    #[serde(alias = "read-only", alias = "read_only")]
+    pub readonly: Option<bool>,
     #[serde(default)]
     pub arch: ArchFilter,
     #[serde(default)]
@@ -392,6 +394,7 @@ impl ContainerConfig {
             image: other.image.clone().or_else(|| self.image.clone()),
             platform: other.platform.clone().or_else(|| self.platform.clone()),
             workdir: other.workdir.clone().or_else(|| self.workdir.clone()),
+            readonly: other.readonly.or(self.readonly),
             arch: self.arch.merged(&other.arch),
             packages: if other.packages.is_empty() {
                 self.packages.clone()

@@ -87,6 +87,7 @@ fn native_step_accepts_container_override() {
 steps:
   - name: Install locally
     container: false
+    read-only: true
     run: ci completion bash
 "#,
     )
@@ -100,6 +101,7 @@ steps:
         .expect("valid step");
 
     assert_eq!(step.container, Some(false));
+    assert_eq!(step.readonly, Some(true));
 }
 
 #[test]

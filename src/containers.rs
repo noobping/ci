@@ -20,6 +20,7 @@ pub(crate) struct ContainerShellSpec<'a> {
     pub extra_volumes: &'a [String],
     pub cache_mounts: &'a [(PathBuf, String)],
     pub container_workdir: Option<&'a str>,
+    pub readonly: bool,
 }
 
 pub(crate) struct ContainerCommandExistsSpec<'a> {
@@ -79,7 +80,7 @@ impl ContainerBackend {
     }
 
     pub(crate) fn run_shell(&self, spec: &ContainerShellSpec<'_>) -> Result<i32> {
-        let mount = self.bind_mount(spec.repo_root, "/work");
+        let mount = self.bind_mount(spec.repo_root, "/work", spec.readonly);
         let container_workdir = spec
             .container_workdir
             .map(ToOwned::to_owned)
@@ -117,7 +118,9 @@ impl ContainerBackend {
             command.arg("-v").arg(volume);
         }
         for (source, target) in spec.cache_mounts {
-            command.arg("-v").arg(self.bind_mount(source, target));
+            command
+                .arg("-v")
+                .arg(self.bind_mount(source, target, false));
         }
         for (key, value) in spec.env {
             command.arg("-e").arg(format!("{key}={value}"));
@@ -138,7 +141,7 @@ impl ContainerBackend {
         spec: &ContainerCommandExistsSpec<'_>,
         name: &str,
     ) -> Result<bool> {
-        let mount = self.bind_mount(spec.repo_root, "/work");
+        let mount = self.bind_mount(spec.repo_root, "/work", false);
         let mut command = Command::new(&self.runtime);
         command
             .arg("run")
@@ -178,7 +181,7 @@ impl ContainerBackend {
         args: &[String],
         platform: Option<&str>,
     ) -> Result<i32> {
-        let mount = self.bind_mount(action_dir, "/action");
+        let mount = self.bind_mount(action_dir, "/action", false);
         let mut command = Command::new(&self.runtime);
         command
             .arg("run")
@@ -262,10 +265,17 @@ impl ContainerBackend {
         }
     }
 
-    fn bind_mount(&self, source: &Path, target: &str) -> String {
+    fn bind_mount(&self, source: &Path, target: &str, readonly: bool) -> String {
         let mut mount = format!("{}:{target}", source.display());
         if self.runtime == "podman" {
             mount.push_str(":z");
+        }
+        if readonly {
+            if self.runtime == "podman" {
+                mount.push_str(",ro");
+            } else {
+                mount.push_str(":ro");
+            }
         }
         mount
     }

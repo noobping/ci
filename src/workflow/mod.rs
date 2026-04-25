@@ -108,6 +108,7 @@ pub struct NativeStep {
     pub run: Option<String>,
     pub uses: Option<String>,
     pub container: Option<bool>,
+    pub readonly: Option<bool>,
     pub with: BTreeMap<String, String>,
     pub extra: BTreeMap<String, String>,
     pub shell: Option<String>,

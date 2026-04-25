@@ -201,6 +201,7 @@ fn generated_build_workflow(
                 run: Some(stack.build_command.clone()),
                 uses: None,
                 container: None,
+                readonly: None,
                 with: Default::default(),
                 extra: Default::default(),
                 shell: None,

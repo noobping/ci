@@ -50,6 +50,8 @@ pub(crate) struct RawNativeStep {
     use_value: Option<String>,
     uses: Option<String>,
     container: Option<bool>,
+    #[serde(alias = "read-only", alias = "read_only")]
+    readonly: Option<bool>,
     shell: Option<String>,
     #[serde(default)]
     env: BTreeMap<String, Value>,
@@ -75,6 +77,7 @@ impl RawNativeStep {
             use_value,
             uses,
             container,
+            readonly,
             shell,
             env,
             with,
@@ -99,6 +102,7 @@ impl RawNativeStep {
             run,
             uses,
             container,
+            readonly,
             with: stringify_yaml_map(with),
             extra: stringify_yaml_map(extra),
             shell,

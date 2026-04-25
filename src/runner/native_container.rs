@@ -35,6 +35,7 @@ pub(crate) fn native_container_enabled(
             resolved.container.kind.is_some()
                 || resolved.container.image.is_some()
                 || resolved.container.platform.is_some()
+                || resolved.container.readonly.is_some()
                 || !resolved.container.arch.is_empty()
                 || !resolved.container.packages.is_empty()
                 || !resolved.container.components.is_empty()

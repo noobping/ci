@@ -11,7 +11,7 @@ use crate::workflow::is_known_hook;
 #[derive(Clone, Debug, Parser)]
 #[command(name = "ci")]
 #[command(version)]
-#[command(about = "small Git-native CI runner.")]
+#[command(about = "small Git-native CI runner and build tool.")]
 #[command(disable_help_subcommand = false)]
 pub struct Cli {
     #[command(flatten)]

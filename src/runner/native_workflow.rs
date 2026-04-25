@@ -171,6 +171,10 @@ pub(crate) fn run_native_yaml(
                     extra_volumes: &resolved.container.volumes,
                     cache_mounts: &native_cache_mounts,
                     container_workdir: resolved.container.workdir.as_deref(),
+                    readonly: step
+                        .readonly
+                        .or(resolved.container.readonly)
+                        .unwrap_or(false),
                 })?
             } else {
                 run_shell(shell, &script, &workdir, &condition_env)?

@@ -59,6 +59,7 @@ workflows:
         - htop
       components:
         - cargo-fmt
+      readonly: true
       env:
         RUST_LOG: debug
       volumes:
@@ -80,11 +81,33 @@ workflows:
     );
     assert_eq!(container.packages, vec!["htop"]);
     assert_eq!(container.components, vec!["cargo-fmt"]);
+    assert_eq!(container.readonly, Some(true));
     assert_eq!(
         container.env.get("RUST_LOG").map(String::as_str),
         Some("debug")
     );
     assert_eq!(container.volumes, vec!["~/.cache/ci:/cache"]);
+}
+
+#[test]
+fn container_readonly_accepts_yaml_aliases_and_overrides_defaults() {
+    let file: ConfigFile = serde_yaml::from_str(
+        r#"
+defaults:
+  container:
+    read-only: true
+workflows:
+  build:
+    container:
+      read_only: false
+"#,
+    )
+    .expect("parse readonly aliases");
+    let defaults = file.root_defaults.merge(&file.defaults);
+    let container = default_container_config(&defaults)
+        .merge(&file.workflows.get("build").expect("workflow").container);
+
+    assert_eq!(container.readonly, Some(false));
 }
 
 #[test]

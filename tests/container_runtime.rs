@@ -52,6 +52,72 @@ steps:
 }
 
 #[test]
+fn native_container_readonly_mount_can_be_global_or_step_override() {
+    let repo = TestRepo::new();
+    let fake = TempDir::new().expect("fake podman dir");
+    let fake_bin = make_fake_podman(fake.path());
+    repo.write(
+        ".ci/build.yml",
+        r#"
+on: [manual]
+tech: rust
+container:
+  image: localhost/fake-rust
+  readonly: true
+steps:
+  - name: readonly step
+    run: "true"
+  - name: writable step
+    readonly: false
+    run: "true"
+"#,
+    );
+
+    let mut command = repo.ci();
+    command.env("PATH", path_with_fake_bin(&fake_bin)).args([
+        "run",
+        "--container-runtime",
+        "podman",
+        "build",
+    ]);
+    assert_success(output(command));
+
+    let log = std::fs::read_to_string(fake.path().join("podman.log")).expect("read podman log");
+    assert!(log.contains(":/work:z,ro"));
+    assert!(log.contains(":/work:z -w /work"));
+}
+
+#[test]
+fn container_readonly_alone_enables_native_container() {
+    let repo = TestRepo::new();
+    let fake = TempDir::new().expect("fake podman dir");
+    let fake_bin = make_fake_podman(fake.path());
+    repo.write(
+        ".ci/build.yml",
+        r#"
+on: [manual]
+container:
+  readonly: true
+steps:
+  - run: "true"
+"#,
+    );
+
+    let mut command = repo.ci();
+    command.env("PATH", path_with_fake_bin(&fake_bin)).args([
+        "run",
+        "--container-runtime",
+        "podman",
+        "build",
+    ]);
+    assert_success(output(command));
+
+    let log = std::fs::read_to_string(fake.path().join("podman.log")).expect("read podman log");
+    assert!(log.contains(":/work:z,ro"));
+    assert!(log.contains("docker.io/library/debian:stable-slim"));
+}
+
+#[test]
 fn native_container_builds_generated_image_for_packages_and_components() {
     let repo = TestRepo::new();
     let fake = TempDir::new().expect("fake podman dir");

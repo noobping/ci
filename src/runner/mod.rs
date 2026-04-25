@@ -496,6 +496,7 @@ fn run_container_workflow(
         extra_volumes: &resolved.container.volumes,
         cache_mounts: &[],
         container_workdir: resolved.container.workdir.as_deref(),
+        readonly: resolved.container.readonly.unwrap_or(false),
     })
 }
 

@@ -32,7 +32,7 @@ if [ "$#" -gt 0 ] && [ "$1" = "run" ]; then
       -v)
         mount=$2
         case "$mount" in
-          *:/work|*:/work:z)
+          *:/work|*:/work:*)
             repo=${{mount%%:/work*}}
             ;;
         esac

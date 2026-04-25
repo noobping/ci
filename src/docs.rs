@@ -131,6 +131,7 @@ container:
     RUST_BACKTRACE: "1"
 steps:
   - run: cargo fmt --check
+    readonly: true
   - run: cargo test --all
   - run: cargo build --release
   - use: export

@@ -3,7 +3,7 @@ name = "ci"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "small Git-native CI runner"
+description = "small Git-native CI runner and build tool"
 repository = "https://github.com/noobping/ci"
 
 [profile.release]

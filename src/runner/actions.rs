@@ -240,6 +240,7 @@ fn run_actions_run_step(
                 extra_volumes: &[],
                 cache_mounts: &[],
                 container_workdir: None,
+                readonly: execution.resolved.container.readonly.unwrap_or(false),
             })
     } else {
         run_shell(shell, &script, &workdir, &merged)
@@ -358,6 +359,7 @@ fn run_actions_uses_step(
                 extra_volumes: &[],
                 cache_mounts: &[],
                 container_workdir: None,
+                readonly: execution.resolved.container.readonly.unwrap_or(false),
             });
     }
 
@@ -538,6 +540,7 @@ fn run_local_action(
                     extra_volumes: &[],
                     cache_mounts: &[],
                     container_workdir: None,
+                    readonly: false,
                 })
             }
         }
