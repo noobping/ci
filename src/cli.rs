@@ -262,6 +262,8 @@ pub fn rewrite_argv(mut argv: Vec<OsString>) -> Vec<OsString> {
     if let Some(index) = find_command_index(&argv) {
         if argv[index] == "doctor" {
             argv[index] = OsString::from("status");
+        } else if !is_known_command(&argv[index]) {
+            argv.insert(index, OsString::from("run"));
         }
     }
 
@@ -291,11 +293,38 @@ fn find_command_index(argv: &[OsString]) -> Option<usize> {
     None
 }
 
+fn is_known_command(command: &OsStr) -> bool {
+    matches!(
+        command.to_str(),
+        Some(
+            "run"
+                | "list"
+                | "ls"
+                | "install"
+                | "uninstall"
+                | "remove"
+                | "update"
+                | "hook"
+                | "doctor"
+                | "status"
+                | "explain"
+                | "clean"
+                | "completion"
+                | "man"
+                | "init"
+                | "self"
+                | "help"
+        )
+    )
+}
+
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
+
     use clap::Parser;
 
-    use super::{Cli, Commands, ListArgs};
+    use super::{rewrite_argv, Cli, Commands, ListArgs};
 
     #[test]
     fn list_defaults_to_porcelain_when_stdout_is_not_a_terminal() {
@@ -332,5 +361,52 @@ mod tests {
     #[test]
     fn list_porcelain_flags_conflict() {
         assert!(Cli::try_parse_from(["ci", "list", "--porcelain", "--no-porcelain"]).is_err());
+    }
+
+    #[test]
+    fn unknown_command_is_rewritten_as_run_workflow() {
+        let cli = Cli::try_parse_from(rewrite(["ci", "build"])).expect("parse");
+
+        match cli.command {
+            Commands::Run(args) => assert_eq!(args.workflow.as_deref(), Some("build")),
+            _ => panic!("expected run command"),
+        }
+    }
+
+    #[test]
+    fn unknown_command_rewrite_keeps_global_options_before_workflow() {
+        let cli = Cli::try_parse_from(rewrite([
+            "ci",
+            "--repo",
+            "/tmp/project",
+            "build",
+            "--dry-run",
+        ]))
+        .expect("parse");
+
+        assert_eq!(cli.global.repo, std::path::PathBuf::from("/tmp/project"));
+        match cli.command {
+            Commands::Run(args) => {
+                assert_eq!(args.workflow.as_deref(), Some("build"));
+                assert!(args.dry_run);
+            }
+            _ => panic!("expected run command"),
+        }
+    }
+
+    #[test]
+    fn known_commands_and_aliases_are_not_rewritten_as_workflows() {
+        let list = Cli::try_parse_from(rewrite(["ci", "list"])).expect("parse");
+        assert!(matches!(list.command, Commands::List(_)));
+
+        let list_alias = Cli::try_parse_from(rewrite(["ci", "ls"])).expect("parse");
+        assert!(matches!(list_alias.command, Commands::List(_)));
+
+        let status_alias = Cli::try_parse_from(rewrite(["ci", "doctor"])).expect("parse");
+        assert!(matches!(status_alias.command, Commands::Status(_)));
+    }
+
+    fn rewrite<const N: usize>(argv: [&str; N]) -> Vec<OsString> {
+        rewrite_argv(argv.into_iter().map(OsString::from).collect())
     }
 }

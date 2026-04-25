@@ -19,6 +19,7 @@ ci list
 ci list --porcelain
 ci run
 ci run build
+ci build
 ci run --event pre-push
 ci install --mode link --hooks pre-commit,pre-push
 ci status
@@ -39,6 +40,8 @@ ci uninstall --restore
 - `clean`: export or keep recorded artifacts from managed run manifests
 - `completion`: generate shell completion scripts
 - `man`: generate `man1` pages from the current CLI
+
+If the first command does not match a built-in command, `ci` treats it as a workflow name. For example, `ci build` is equivalent to `ci run build`.
 
 ## Script-friendly list output
 
