@@ -48,8 +48,8 @@ pub struct GlobalOptions {
     #[arg(long = "git-image", global = true)]
     pub git_image: Option<String>,
 
-    #[arg(long = "arch", global = true)]
-    pub arch: Option<Architecture>,
+    #[arg(long = "arch", global = true, value_delimiter = ',')]
+    pub arch: Vec<Architecture>,
 }
 
 #[derive(Clone, Debug, Subcommand)]
@@ -412,11 +412,23 @@ mod tests {
 
     #[test]
     fn arch_flag_normalizes_aliases() {
-        let cli = Cli::try_parse_from(rewrite(["ci", "--arch", "amd64", "run"])).expect("parse");
+        let cli = Cli::try_parse_from(rewrite([
+            "ci",
+            "--arch",
+            "amd64,arm64",
+            "--arch",
+            "x86_64",
+            "run",
+        ]))
+        .expect("parse");
 
         assert_eq!(
-            cli.global.arch.as_ref().map(ToString::to_string).as_deref(),
-            Some("x64")
+            cli.global
+                .arch
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            vec!["x64", "arm64", "x64"]
         );
     }
 

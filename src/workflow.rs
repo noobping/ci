@@ -492,15 +492,12 @@ pub fn explain_subject(
         return lines;
     }
 
-    let matches = select_workflows(
-        workflows,
-        config,
-        None,
-        subject,
-        &config.defaults.arch,
-        branch,
-        true,
-    );
+    let matches = config
+        .defaults
+        .arch
+        .iter()
+        .flat_map(|arch| select_workflows(workflows, config, None, subject, arch, branch, true))
+        .collect::<Vec<_>>();
     if matches.is_empty() {
         lines.push(format!("No workflows matched `{subject}`"));
         return lines;

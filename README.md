@@ -20,7 +20,7 @@ ci list --porcelain
 ci run
 ci run build
 ci build
-ci run --arch arm64 build
+ci run --arch x64,arm64 build
 ci run --event pre-push
 ci install --mode link --hooks pre-commit,pre-push
 ci status
@@ -197,10 +197,12 @@ Example:
 ```yaml
 defaults:
   silent: true
-  arch: x64
+  arch:
+    - x64
+    - arm64
 ```
 
-Workflow `arch` filters accept aliases such as `amd64`, `x64`, `x86_64`, `arm64`, and `aarch64`. When a container workflow or action does not set `container.platform`, `ci` maps the selected arch to a podman/docker platform such as `linux/amd64` or `linux/arm64`.
+`--arch` accepts comma-separated values and can be repeated, so `--arch x64,arm64` and `--arch x64 --arch arm64` are equivalent. `defaults.arch` accepts either one value or a YAML list. Workflow `arch` filters accept aliases such as `amd64`, `x64`, `x86_64`, `arm64`, and `aarch64`. When a container workflow or action does not set `container.platform`, `ci` maps the selected arch to a podman/docker platform such as `linux/amd64` or `linux/arm64`.
 
 ## Actions compatibility
 

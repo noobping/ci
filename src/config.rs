@@ -214,7 +214,8 @@ pub struct DefaultsConfig {
     pub shell: Option<String>,
     pub silent: Option<bool>,
     pub fail_fast: Option<bool>,
-    pub arch: Option<Architecture>,
+    #[serde(default)]
+    pub arch: ArchFilter,
     pub container_runtime: Option<ContainerRuntime>,
     pub git_mode: Option<GitMode>,
     pub git_image: Option<String>,
@@ -315,7 +316,7 @@ pub struct Defaults {
     pub shell: String,
     pub silent: bool,
     pub fail_fast: bool,
-    pub arch: Architecture,
+    pub arch: Vec<Architecture>,
     pub container_runtime: ContainerRuntime,
     pub git_mode: GitMode,
     pub git_image: String,
@@ -357,11 +358,7 @@ impl ResolvedConfig {
                 .unwrap_or_else(|| "/bin/sh".to_string()),
             silent: file.defaults.silent.unwrap_or(false),
             fail_fast: file.defaults.fail_fast.unwrap_or(true),
-            arch: global
-                .arch
-                .clone()
-                .or_else(|| file.defaults.arch.clone())
-                .unwrap_or_else(Architecture::host),
+            arch: selected_arches(&global.arch, &file.defaults.arch),
             container_runtime: file
                 .defaults
                 .container_runtime
@@ -418,6 +415,30 @@ impl ResolvedConfig {
     pub fn hook_override(&self, event: &str) -> WorkflowOverride {
         self.hooks.get(event).cloned().unwrap_or_default()
     }
+}
+
+fn selected_arches(global: &[Architecture], configured: &ArchFilter) -> Vec<Architecture> {
+    if !global.is_empty() {
+        return global.to_vec();
+    }
+
+    let configured = configured.to_vec();
+    if configured.is_empty() {
+        vec![Architecture::host()]
+    } else {
+        configured
+    }
+}
+
+pub fn format_arches(arches: &[Architecture]) -> String {
+    if arches.is_empty() {
+        return Architecture::host().to_string();
+    }
+    arches
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 impl WorkflowOverride {
@@ -505,5 +526,50 @@ pub fn path_relative_to(base: &Path, path: &Path) -> PathBuf {
         path.to_path_buf()
     } else {
         base.join(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ConfigFile;
+
+    #[test]
+    fn defaults_arch_accepts_single_value_or_list() {
+        let single: ConfigFile = serde_yaml::from_str(
+            r#"
+defaults:
+  arch: amd64
+"#,
+        )
+        .expect("parse single arch");
+        assert_eq!(
+            single
+                .defaults
+                .arch
+                .to_vec()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            vec!["x64"]
+        );
+
+        let many: ConfigFile = serde_yaml::from_str(
+            r#"
+defaults:
+  arch:
+    - x86_64
+    - aarch64
+"#,
+        )
+        .expect("parse arch list");
+        assert_eq!(
+            many.defaults
+                .arch
+                .to_vec()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            vec!["x64", "arm64"]
+        );
     }
 }

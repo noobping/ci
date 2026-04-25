@@ -220,27 +220,38 @@ pub fn cmd_run(ctx: &AppContext, args: &RunArgs) -> Result<i32> {
         !ctx.config.defaults.fail_fast
     };
 
-    let invocation = RunInvocation {
-        workflow: if args.all {
-            None
-        } else {
-            args.workflow.clone()
-        },
-        event: args.event.clone(),
-        dry_run: args.dry_run,
-        keep_going,
-        arch: ctx.config.defaults.arch.clone(),
-        container_runtime: args
-            .container_runtime
-            .unwrap_or(ctx.config.defaults.container_runtime),
-        respect_branches: args.respect_branches,
-        recursive_checkout: !args.no_recursive_checkout && ctx.config.defaults.recursive_checkout,
-        lock: args.lock,
-        hook_args: Vec::new(),
-        branch: ctx.repo.branch.clone(),
-    };
+    let mut last_failure = 0;
+    for arch in &ctx.config.defaults.arch {
+        let invocation = RunInvocation {
+            workflow: if args.all {
+                None
+            } else {
+                args.workflow.clone()
+            },
+            event: args.event.clone(),
+            dry_run: args.dry_run,
+            keep_going,
+            arch: arch.clone(),
+            container_runtime: args
+                .container_runtime
+                .unwrap_or(ctx.config.defaults.container_runtime),
+            respect_branches: args.respect_branches,
+            recursive_checkout: !args.no_recursive_checkout
+                && ctx.config.defaults.recursive_checkout,
+            lock: args.lock,
+            hook_args: Vec::new(),
+            branch: ctx.repo.branch.clone(),
+        };
+        let status = execute_run(ctx, invocation)?;
+        if status != 0 {
+            last_failure = status;
+            if !keep_going {
+                return Ok(status);
+            }
+        }
+    }
 
-    execute_run(ctx, invocation)
+    Ok(last_failure)
 }
 
 pub fn cmd_hook(ctx: &AppContext, args: &HookArgs) -> Result<i32> {
@@ -249,20 +260,32 @@ pub fn cmd_hook(ctx: &AppContext, args: &HookArgs) -> Result<i32> {
     }
 
     let branch = branch_from_hook(ctx, &args.hook, &args.hook_args)?;
-    let invocation = RunInvocation {
-        workflow: None,
-        event: args.hook.clone(),
-        dry_run: false,
-        keep_going: !ctx.config.defaults.fail_fast,
-        arch: ctx.config.defaults.arch.clone(),
-        container_runtime: ctx.config.defaults.container_runtime,
-        respect_branches: true,
-        recursive_checkout: ctx.config.defaults.recursive_checkout,
-        lock: true,
-        hook_args: args.hook_args.clone(),
-        branch,
-    };
-    execute_run(ctx, invocation)
+    let keep_going = !ctx.config.defaults.fail_fast;
+    let mut last_failure = 0;
+    for arch in &ctx.config.defaults.arch {
+        let invocation = RunInvocation {
+            workflow: None,
+            event: args.hook.clone(),
+            dry_run: false,
+            keep_going,
+            arch: arch.clone(),
+            container_runtime: ctx.config.defaults.container_runtime,
+            respect_branches: true,
+            recursive_checkout: ctx.config.defaults.recursive_checkout,
+            lock: true,
+            hook_args: args.hook_args.clone(),
+            branch: branch.clone(),
+        };
+        let status = execute_run(ctx, invocation)?;
+        if status != 0 {
+            last_failure = status;
+            if !keep_going {
+                return Ok(status);
+            }
+        }
+    }
+
+    Ok(last_failure)
 }
 
 pub fn cmd_init(ctx: &AppContext, args: &InitArgs) -> Result<i32> {
@@ -333,9 +356,10 @@ fn execute_run(ctx: &AppContext, invocation: RunInvocation) -> Result<i32> {
     if invocation.dry_run {
         for item in &matches {
             println!(
-                "would run {} [{}] because {}",
+                "would run {} [{}] for {} because {}",
                 item.workflow.name,
                 provider_name(&item.workflow.provider),
+                invocation.arch,
                 item.reasons.join("; ")
             );
         }

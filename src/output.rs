@@ -119,7 +119,7 @@ mod tests {
             color: ColorWhen::Never,
             git_mode: None,
             git_image: None,
-            arch: None,
+            arch: Vec::new(),
         }
     }
 
@@ -163,7 +163,7 @@ mod tests {
             shell: "/bin/sh".to_string(),
             silent,
             fail_fast: true,
-            arch: Architecture::host(),
+            arch: vec![Architecture::host()],
             container_runtime: ContainerRuntime::Auto,
             git_mode: GitMode::Auto,
             git_image: "docker.io/alpine/git:latest".to_string(),

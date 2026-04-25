@@ -4,6 +4,7 @@ use fs2::FileExt;
 
 use crate::artifacts::load_manifests;
 use crate::cli::{ExplainArgs, StatusArgs};
+use crate::config::format_arches;
 use crate::git::{command_exists, preferred_container_runtime};
 use crate::install::{inspect_installation, BinaryState};
 use crate::runner::AppContext;
@@ -20,7 +21,7 @@ pub fn cmd_status(ctx: &AppContext, _args: &StatusArgs) -> crate::error::Result<
     println!("CI dir:     {}", ctx.repo.ci_dir.display());
     println!("Bare repo:  {}", ctx.repo.is_bare);
     println!("Git mode:   {:?}", ctx.git.mode());
-    println!("Arch:       {}", ctx.config.defaults.arch);
+    println!("Arch:       {}", format_arches(&ctx.config.defaults.arch));
     println!(
         "Config:     {}",
         if ctx.config.loaded {
@@ -59,25 +60,27 @@ pub fn cmd_status(ctx: &AppContext, _args: &StatusArgs) -> crate::error::Result<
         );
     }
 
-    match install.binary {
-        BinaryState::Missing(path) => println!(
-            "WARN ci binary is not installed into this repository ({})",
-            path.display()
-        ),
-        BinaryState::Copy { path } => println!("OK   ci copy installed at {}", path.display()),
-        BinaryState::Symlink {
-            path,
-            target,
-            broken,
-        } => {
-            if broken {
-                println!(
-                    "WARN ci symlink {} -> {} is broken",
-                    path.display(),
-                    target.display()
-                );
-            } else {
-                println!("OK   ci symlink {} -> {}", path.display(), target.display());
+    for binary in install.binaries {
+        match binary {
+            BinaryState::Missing(path) => println!(
+                "WARN ci binary is not installed into this repository ({})",
+                path.display()
+            ),
+            BinaryState::Copy { path } => println!("OK   ci copy installed at {}", path.display()),
+            BinaryState::Symlink {
+                path,
+                target,
+                broken,
+            } => {
+                if broken {
+                    println!(
+                        "WARN ci symlink {} -> {} is broken",
+                        path.display(),
+                        target.display()
+                    );
+                } else {
+                    println!("OK   ci symlink {} -> {}", path.display(), target.display());
+                }
             }
         }
     }
