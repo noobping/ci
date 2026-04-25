@@ -136,6 +136,7 @@ mod tests {
             container: false,
             no_container: false,
             arch: Vec::new(),
+            tech_stack: None,
         }
     }
 

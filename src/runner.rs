@@ -346,10 +346,12 @@ pub fn cmd_init(ctx: &AppContext, args: &InitArgs) -> Result<i32> {
         )));
     }
 
-    let content = if ctx.repo.root.join("Cargo.toml").exists() {
-        DEFAULT_RUST_WORKFLOW
-    } else {
-        DEFAULT_SHELL_WORKFLOW
+    let content = match default_build_stack(&ctx.repo.root, default_tech_stack_override(ctx)) {
+        Some(stack) if stack.container_type == ContainerType::Rust => {
+            DEFAULT_RUST_WORKFLOW.to_string()
+        }
+        Some(stack) => default_build_workflow_content(&stack),
+        None => DEFAULT_SHELL_WORKFLOW.to_string(),
     };
 
     fs::write(&build, content)?;
@@ -459,32 +461,161 @@ fn available_workflows(ctx: &AppContext) -> Result<Vec<Workflow>> {
         Ok(generated_default_workflows(
             &ctx.repo.root,
             &ctx.repo.ci_dir,
-            command_exists("cargo"),
+            default_tech_stack_override(ctx),
+            &command_exists,
         ))
     } else {
         Ok(workflows)
     }
 }
 
+#[derive(Clone, Debug)]
+struct DefaultBuildStack {
+    container_type: ContainerType,
+    build_command: String,
+    host_tool: String,
+}
+
+fn default_tech_stack_override(ctx: &AppContext) -> Option<ContainerType> {
+    ctx.global
+        .tech_stack
+        .or(ctx.config.global_tech_stack)
+        .or(ctx.config.defaults.container.kind)
+        .filter(|kind| !matches!(kind, ContainerType::Auto | ContainerType::General))
+}
+
+fn default_build_stack(
+    repo_root: &Path,
+    requested_stack: Option<ContainerType>,
+) -> Option<DefaultBuildStack> {
+    match requested_stack.unwrap_or(ContainerType::Auto) {
+        ContainerType::Auto => detect_default_build_stack(repo_root),
+        ContainerType::General => None,
+        stack => default_build_stack_for_type(repo_root, stack),
+    }
+}
+
+fn detect_default_build_stack(repo_root: &Path) -> Option<DefaultBuildStack> {
+    if repo_root.join("Cargo.toml").exists() {
+        return default_build_stack_for_type(repo_root, ContainerType::Rust);
+    }
+    if repo_root.join("package.json").exists() {
+        return default_build_stack_for_type(repo_root, ContainerType::Node);
+    }
+    if repo_root.join("go.mod").exists() {
+        return default_build_stack_for_type(repo_root, ContainerType::Go);
+    }
+    if repo_root.join("pom.xml").exists() {
+        return default_build_stack_for_type(repo_root, ContainerType::Maven);
+    }
+    if gradle_project_exists(repo_root) {
+        return default_build_stack_for_type(repo_root, ContainerType::Gradle);
+    }
+    if dotnet_project_exists(repo_root) {
+        return default_build_stack_for_type(repo_root, ContainerType::Dotnet);
+    }
+    if repo_root.join("pyproject.toml").exists() || repo_root.join("setup.py").exists() {
+        return default_build_stack_for_type(repo_root, ContainerType::Python);
+    }
+    None
+}
+
+fn default_build_stack_for_type(
+    repo_root: &Path,
+    stack: ContainerType,
+) -> Option<DefaultBuildStack> {
+    let (build_command, host_tool) = match stack {
+        ContainerType::Rust => ("cargo build".to_string(), "cargo".to_string()),
+        ContainerType::Node => (
+            "npm install && npm run build --if-present".to_string(),
+            "npm".to_string(),
+        ),
+        ContainerType::Go => ("go build ./...".to_string(), "go".to_string()),
+        ContainerType::Python => (
+            "python3 -m pip install --upgrade build && python3 -m build".to_string(),
+            "python3".to_string(),
+        ),
+        ContainerType::Maven => ("mvn package".to_string(), "mvn".to_string()),
+        ContainerType::Gradle if repo_root.join("gradlew").exists() => (
+            "chmod +x ./gradlew && ./gradlew build".to_string(),
+            "java".to_string(),
+        ),
+        ContainerType::Gradle => ("gradle build".to_string(), "gradle".to_string()),
+        ContainerType::Dotnet => ("dotnet build".to_string(), "dotnet".to_string()),
+        ContainerType::Auto | ContainerType::General => return None,
+    };
+
+    Some(DefaultBuildStack {
+        container_type: stack,
+        build_command,
+        host_tool,
+    })
+}
+
+fn default_build_workflow_content(stack: &DefaultBuildStack) -> String {
+    format!(
+        "name: build\n\
+         on:\n\
+           - manual\n\
+           - pre-push\n\
+         steps:\n\
+           - name: Build\n\
+             run: {}\n",
+        stack.build_command
+    )
+}
+
+fn gradle_project_exists(repo_root: &Path) -> bool {
+    [
+        "gradlew",
+        "build.gradle",
+        "build.gradle.kts",
+        "settings.gradle",
+        "settings.gradle.kts",
+    ]
+    .iter()
+    .any(|name| repo_root.join(name).exists())
+}
+
+fn dotnet_project_exists(repo_root: &Path) -> bool {
+    fs::read_dir(repo_root)
+        .map(|entries| {
+            entries.filter_map(|entry| entry.ok()).any(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|extension| {
+                        matches!(extension.to_ascii_lowercase().as_str(), "sln" | "csproj")
+                    })
+            })
+        })
+        .unwrap_or(false)
+}
+
 fn generated_default_workflows(
     repo_root: &Path,
     ci_dir: &Path,
-    host_cargo_available: bool,
+    requested_stack: Option<ContainerType>,
+    command_available: &dyn Fn(&str) -> bool,
 ) -> Vec<Workflow> {
-    if repo_root.join("Cargo.toml").exists() {
-        return vec![generated_rust_build_workflow(ci_dir, host_cargo_available)];
-    }
-
-    Vec::new()
+    default_build_stack(repo_root, requested_stack)
+        .map(|stack| generated_build_workflow(ci_dir, &stack, command_available(&stack.host_tool)))
+        .into_iter()
+        .collect()
 }
 
-fn generated_rust_build_workflow(ci_dir: &Path, host_cargo_available: bool) -> Workflow {
+fn generated_build_workflow(
+    ci_dir: &Path,
+    stack: &DefaultBuildStack,
+    host_tool_available: bool,
+) -> Workflow {
     let mut metadata = WorkflowOverride {
         on: EventFilter::Many(vec!["manual".to_string(), "pre-push".to_string()]),
         ..WorkflowOverride::default()
     };
-    if !host_cargo_available {
-        metadata.container.kind = Some(ContainerType::Rust);
+    if !host_tool_available {
+        metadata.container.kind = Some(stack.container_type);
     }
 
     Workflow {
@@ -496,7 +627,7 @@ fn generated_rust_build_workflow(ci_dir: &Path, host_cargo_available: bool) -> W
             metadata,
             steps: vec![NativeStep {
                 name: Some("build".to_string()),
-                run: Some("cargo build".to_string()),
+                run: Some(stack.build_command.clone()),
                 uses: None,
                 container: None,
                 with: BTreeMap::new(),
@@ -817,7 +948,7 @@ fn prepare_native_container_image(
     }
 
     if !resolved.container.components.is_empty()
-        && native_container_effective_type(ctx, resolved, steps) == ContainerType::General
+        && native_container_effective_type(ctx, resolved, steps) != ContainerType::Rust
     {
         return Err(CiError::Usage(
             "container.components is only supported for Rust containers".to_string(),
@@ -865,6 +996,12 @@ fn native_container_base_image(
 
     match native_container_effective_type(ctx, resolved, steps) {
         ContainerType::Rust => "docker.io/library/rust:latest".to_string(),
+        ContainerType::Node => "docker.io/library/node:22-bookworm-slim".to_string(),
+        ContainerType::Go => "docker.io/library/golang:latest".to_string(),
+        ContainerType::Python => "docker.io/library/python:3".to_string(),
+        ContainerType::Maven => "docker.io/library/maven:latest".to_string(),
+        ContainerType::Gradle => "docker.io/library/gradle:latest".to_string(),
+        ContainerType::Dotnet => "mcr.microsoft.com/dotnet/sdk:latest".to_string(),
         ContainerType::General => "docker.io/library/debian:stable-slim".to_string(),
         ContainerType::Auto => unreachable!("container type is resolved before selecting image"),
     }
@@ -875,25 +1012,71 @@ fn native_container_effective_type(
     resolved: &ResolvedWorkflow,
     steps: &[NativeStep],
 ) -> ContainerType {
-    match resolved.container.kind.unwrap_or(ContainerType::Auto) {
+    match ctx
+        .global
+        .tech_stack
+        .or(ctx.config.global_tech_stack)
+        .or(resolved.container.kind)
+        .unwrap_or(ContainerType::Auto)
+    {
         ContainerType::Auto
             if !resolved.container.components.is_empty()
-                || native_workflow_looks_like_rust(ctx, steps) =>
+                || native_workflow_looks_like_stack(ctx, steps, ContainerType::Rust) =>
         {
             ContainerType::Rust
         }
-        ContainerType::Auto => ContainerType::General,
+        ContainerType::Auto => {
+            detect_native_workflow_stack(ctx, steps).unwrap_or(ContainerType::General)
+        }
         kind => kind,
     }
 }
 
-fn native_workflow_looks_like_rust(ctx: &AppContext, steps: &[NativeStep]) -> bool {
-    ctx.repo.root.join("Cargo.toml").exists()
-        || steps.iter().any(|step| {
-            step.run
-                .as_deref()
-                .map(|run| run.split_whitespace().any(|part| part == "cargo"))
-                .unwrap_or(false)
+fn detect_native_workflow_stack(ctx: &AppContext, steps: &[NativeStep]) -> Option<ContainerType> {
+    detect_default_build_stack(&ctx.repo.root)
+        .map(|stack| stack.container_type)
+        .or_else(|| {
+            [
+                ContainerType::Rust,
+                ContainerType::Node,
+                ContainerType::Go,
+                ContainerType::Maven,
+                ContainerType::Gradle,
+                ContainerType::Dotnet,
+                ContainerType::Python,
+            ]
+            .into_iter()
+            .find(|stack| native_workflow_looks_like_stack(ctx, steps, *stack))
+        })
+}
+
+fn native_workflow_looks_like_stack(
+    ctx: &AppContext,
+    steps: &[NativeStep],
+    stack: ContainerType,
+) -> bool {
+    default_build_stack(&ctx.repo.root, Some(stack)).is_some_and(|detected| {
+        detect_default_build_stack(&ctx.repo.root)
+            .map(|repo_stack| repo_stack.container_type == stack)
+            .unwrap_or(false)
+            || steps.iter().any(|step| {
+                step.run
+                    .as_deref()
+                    .map(|run| command_mentions_tool(run, &detected.host_tool))
+                    .unwrap_or(false)
+            })
+    })
+}
+
+fn command_mentions_tool(run: &str, tool: &str) -> bool {
+    run.split(|ch: char| !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/')))
+        .any(|part| {
+            let name = part.rsplit('/').next().unwrap_or(part);
+            name == tool
+                || (tool == "npm" && matches!(name, "node" | "npm" | "npx" | "yarn" | "pnpm"))
+                || (tool == "python3" && matches!(name, "python" | "python3" | "pip" | "pip3"))
+                || (tool == "gradle" && matches!(name, "gradle" | "gradlew"))
+                || (tool == "java" && matches!(name, "gradle" | "gradlew" | "java"))
         })
 }
 
@@ -3533,7 +3716,7 @@ mod tests {
         .expect("cargo");
         let ci_dir = temp.path().join(".ci");
 
-        let workflows = generated_default_workflows(temp.path(), &ci_dir, false);
+        let workflows = generated_default_workflows(temp.path(), &ci_dir, None, &|_| false);
 
         assert_eq!(workflows.len(), 1);
         assert_eq!(workflows[0].name, "build");
@@ -3560,11 +3743,54 @@ mod tests {
         )
         .expect("cargo");
 
-        let workflows = generated_default_workflows(temp.path(), &temp.path().join(".ci"), true);
+        let workflows =
+            generated_default_workflows(temp.path(), &temp.path().join(".ci"), None, &|_| true);
 
         match &workflows[0].source {
             WorkflowSource::NativeYaml(native) => {
                 assert_eq!(native.metadata.container.kind, None);
+            }
+            _ => panic!("expected native workflow"),
+        }
+    }
+
+    #[test]
+    fn generated_default_node_build_uses_node_stack() {
+        let temp = TempDir::new().expect("tempdir");
+        fs::write(temp.path().join("package.json"), "{\"scripts\":{}}").expect("package");
+
+        let workflows =
+            generated_default_workflows(temp.path(), &temp.path().join(".ci"), None, &|tool| {
+                tool != "npm"
+            });
+
+        match &workflows[0].source {
+            WorkflowSource::NativeYaml(native) => {
+                assert_eq!(native.metadata.container.kind, Some(ContainerType::Node));
+                assert_eq!(
+                    native.steps[0].run.as_deref(),
+                    Some("npm install && npm run build --if-present")
+                );
+            }
+            _ => panic!("expected native workflow"),
+        }
+    }
+
+    #[test]
+    fn generated_default_build_honors_requested_stack() {
+        let temp = TempDir::new().expect("tempdir");
+
+        let workflows = generated_default_workflows(
+            temp.path(),
+            &temp.path().join(".ci"),
+            Some(ContainerType::Go),
+            &|_| false,
+        );
+
+        match &workflows[0].source {
+            WorkflowSource::NativeYaml(native) => {
+                assert_eq!(native.metadata.container.kind, Some(ContainerType::Go));
+                assert_eq!(native.steps[0].run.as_deref(), Some("go build ./..."));
             }
             _ => panic!("expected native workflow"),
         }

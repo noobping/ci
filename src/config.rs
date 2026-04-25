@@ -175,12 +175,40 @@ pub struct ExecutionConfig {
     pub shell: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 pub enum ContainerType {
     Auto,
     General,
     Rust,
+    #[serde(
+        alias = "javascript",
+        alias = "js",
+        alias = "npm",
+        alias = "yarn",
+        alias = "pnpm"
+    )]
+    #[value(
+        alias = "javascript",
+        alias = "js",
+        alias = "npm",
+        alias = "yarn",
+        alias = "pnpm"
+    )]
+    Node,
+    #[serde(alias = "golang")]
+    #[value(alias = "golang")]
+    Go,
+    #[serde(alias = "py")]
+    #[value(alias = "py")]
+    Python,
+    #[serde(alias = "java")]
+    #[value(alias = "java")]
+    Maven,
+    Gradle,
+    #[serde(alias = "dot-net", alias = ".net", alias = "csharp", alias = "cs")]
+    #[value(alias = "dot-net", alias = ".net", alias = "csharp", alias = "cs")]
+    Dotnet,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -207,6 +235,15 @@ pub struct WorkflowOverride {
     #[serde(default, rename = "on")]
     pub on: EventFilter,
 
+    #[serde(
+        default,
+        rename = "tech",
+        alias = "type",
+        alias = "tech-stack",
+        alias = "tech_stack"
+    )]
+    pub tech_stack: Option<ContainerType>,
+
     #[serde(default)]
     pub arch: ArchFilter,
 
@@ -231,6 +268,14 @@ pub struct DefaultsConfig {
     pub shell: Option<String>,
     pub silent: Option<bool>,
     pub fail_fast: Option<bool>,
+    #[serde(
+        default,
+        rename = "tech",
+        alias = "type",
+        alias = "tech-stack",
+        alias = "tech_stack"
+    )]
+    pub tech_stack: Option<ContainerType>,
     #[serde(default)]
     pub arch: ArchFilter,
     #[serde(default)]
@@ -354,6 +399,7 @@ pub struct Defaults {
 pub struct ResolvedConfig {
     pub path: PathBuf,
     pub loaded: bool,
+    pub global_tech_stack: Option<ContainerType>,
     pub defaults: Defaults,
     pub hooks: BTreeMap<String, WorkflowOverride>,
     pub workflows: BTreeMap<String, WorkflowOverride>,
@@ -423,6 +469,7 @@ impl ResolvedConfig {
         Ok(Self {
             path,
             loaded,
+            global_tech_stack: global.tech_stack,
             defaults,
             hooks: file.hooks,
             workflows: file.workflows,
@@ -454,6 +501,9 @@ fn selected_arches(global: &[Architecture], configured: &ArchFilter) -> Vec<Arch
 
 fn default_container_config(defaults: &DefaultsConfig) -> ContainerConfig {
     let mut container = defaults.container.clone();
+    if container.kind.is_none() {
+        container.kind = defaults.tech_stack;
+    }
     if container.arch.is_empty() && !defaults.arch.is_empty() {
         container.arch = defaults.arch.clone();
     }
@@ -477,6 +527,7 @@ impl DefaultsConfig {
             shell: other.shell.clone().or_else(|| self.shell.clone()),
             silent: other.silent.or(self.silent),
             fail_fast: other.fail_fast.or(self.fail_fast),
+            tech_stack: other.tech_stack.or(self.tech_stack),
             arch: self.arch.merged(&other.arch),
             container: self.container.merge(&other.container),
             container_runtime: other.container_runtime.or(self.container_runtime),
@@ -505,6 +556,7 @@ impl WorkflowOverride {
 
         Self {
             on: self.on.merged(&other.on),
+            tech_stack: other.tech_stack.or(self.tech_stack),
             arch: self.arch.merged(&other.arch),
             branches: self.branches.merge(&other.branches),
             artifacts: self.artifacts.merge(&other.artifacts),
@@ -673,6 +725,33 @@ workflows:
         );
         assert_eq!(container.packages, vec!["htop"]);
         assert_eq!(container.components, vec!["cargo-fmt"]);
+    }
+
+    #[test]
+    fn tech_stack_aliases_become_default_container_type() {
+        let file: ConfigFile = serde_yaml::from_str(
+            r#"
+defaults:
+  tech-stack: node
+"#,
+        )
+        .expect("parse tech stack");
+        let container = default_container_config(&file.defaults);
+
+        assert_eq!(container.kind, Some(ContainerType::Node));
+
+        let root: ConfigFile = serde_yaml::from_str(
+            r#"
+type: golang
+"#,
+        )
+        .expect("parse root tech stack");
+        let defaults = root.root_defaults.merge(&root.defaults);
+
+        assert_eq!(
+            default_container_config(&defaults).kind,
+            Some(ContainerType::Go)
+        );
     }
 
     #[test]

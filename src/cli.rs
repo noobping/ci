@@ -3,7 +3,9 @@ use std::path::PathBuf;
 
 use clap::{ArgAction, Args, Parser, Subcommand};
 
-use crate::config::{Architecture, ArtifactMode, ColorWhen, ContainerRuntime, GitMode};
+use crate::config::{
+    Architecture, ArtifactMode, ColorWhen, ContainerRuntime, ContainerType, GitMode,
+};
 use crate::workflow::is_known_hook;
 
 #[derive(Clone, Debug, Parser)]
@@ -68,6 +70,16 @@ pub struct GlobalOptions {
 
     #[arg(long = "arch", global = true, value_delimiter = ',')]
     pub arch: Vec<Architecture>,
+
+    #[arg(
+        short = 't',
+        long = "tech",
+        alias = "type",
+        alias = "tech-stack",
+        global = true,
+        help = "Select the project tech stack for generated workflows and auto containers"
+    )]
+    pub tech_stack: Option<ContainerType>,
 }
 
 #[derive(Clone, Debug, Subcommand)]
@@ -303,7 +315,7 @@ fn find_command_index(argv: &[OsString]) -> Option<usize> {
         let current = argv[i].to_string_lossy();
         match current.as_ref() {
             "--repo" | "--ci-dir" | "--config" | "--color" | "--git-mode" | "--git-image"
-            | "--arch" => {
+            | "--arch" | "--type" | "--tech" | "--tech-stack" | "-t" => {
                 i += 2;
             }
             value if value.starts_with('-') => {
@@ -345,6 +357,8 @@ mod tests {
     use std::ffi::OsString;
 
     use clap::Parser;
+
+    use crate::config::ContainerType;
 
     use super::{rewrite_argv, Cli, Commands, ListArgs};
 
@@ -463,6 +477,21 @@ mod tests {
         assert!(matches!(disabled.command, Commands::Run(_)));
 
         assert!(Cli::try_parse_from(rewrite(["ci", "-c", "-C", "build"])).is_err());
+    }
+
+    #[test]
+    fn tech_stack_flag_is_global_and_has_aliases() {
+        let short = Cli::try_parse_from(rewrite(["ci", "-t", "node", "build"])).expect("parse");
+        assert_eq!(short.global.tech_stack, Some(ContainerType::Node));
+        assert!(matches!(short.command, Commands::Run(_)));
+
+        let type_alias =
+            Cli::try_parse_from(rewrite(["ci", "build", "--type", "golang"])).expect("parse");
+        assert_eq!(type_alias.global.tech_stack, Some(ContainerType::Go));
+
+        let stack_alias =
+            Cli::try_parse_from(rewrite(["ci", "--tech-stack", "py", "build"])).expect("parse");
+        assert_eq!(stack_alias.global.tech_stack, Some(ContainerType::Python));
     }
 
     fn rewrite<const N: usize>(argv: [&str; N]) -> Vec<OsString> {

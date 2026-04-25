@@ -21,6 +21,7 @@ ci run
 ci run build
 ci build
 ci run --arch x64,arm64 build
+ci run --tech node build
 ci run --event pre-push
 ci install --mode link --hooks pre-commit,pre-push
 ci status
@@ -65,7 +66,7 @@ Use `--porcelain` to force that format on a terminal, or `--no-porcelain` to kee
 
 ## Workflow sources
 
-If a repository has no workflows, `ci` auto-detects a basic one. A Rust project with `Cargo.toml` gets a generated `build` workflow that runs `cargo build`; when host `cargo` is not available, that generated workflow uses the Rust container automatically.
+If a repository has no workflows, `ci` auto-detects a basic `build` workflow for supported stacks. Rust, Node.js, Go, Python packages, Maven, Gradle, and .NET projects get a default build command; when the host tool is not available, the generated workflow uses the matching container automatically. Use `-t`/`--type`/`--tech`/`--tech-stack` to choose the stack explicitly.
 
 Executable scripts:
 
@@ -78,8 +79,8 @@ YAML-ish workflow files:
 ```yaml
 name: build
 defaults:
+  tech: rust
   container:
-    type: rust
     arch:
       - x64
       - arm64
@@ -205,14 +206,14 @@ Optional config lives in:
 .ci/config.yml
 ```
 
-Supported defaults include shell, silent output, fail-fast, architecture, container settings, container runtime, git mode/image, recursive checkout, default branch allowlist, artifact store, and actions cache.
+Supported defaults include shell, silent output, fail-fast, tech stack, architecture, container settings, container runtime, git mode/image, recursive checkout, default branch allowlist, artifact store, and actions cache.
 
 Example:
 
 ```yaml
 silent: true
+tech: rust
 container:
-  type: rust
   arch:
     - x64
     - arm64
@@ -223,9 +224,9 @@ container:
     - htop
 ```
 
-In `.ci/config.yml`, default fields can be written directly at the top level; wrapping them in `defaults:` is still accepted. In workflow files, `defaults:` can set workflow defaults such as `container`, `execution`, `branches`, `artifacts`, and `env`; direct workflow fields override those defaults.
+In `.ci/config.yml`, default fields can be written directly at the top level; wrapping them in `defaults:` is still accepted. In workflow files, `defaults:` can set workflow defaults such as `tech`, `container`, `execution`, `branches`, `artifacts`, and `env`; direct workflow fields override those defaults.
 
-`--arch` accepts comma-separated values and can be repeated, so `--arch x64,arm64` and `--arch x64 --arch arm64` are equivalent. `arch` accepts either one value or a YAML list and is also used as the default `container.arch` when the container arch list is omitted. Architecture is an execution setting. The selected execution architecture is exposed as `CI_ARCH`; the host machine architecture is exposed as `CI_HOST_ARCH`. Native YAML workflows can run inside a generated container with config-level `container`, workflow `defaults.container`, or workflow-level `container`; workflow-level settings override the defaults. Use `-c`/`--container` to force a generated container for native workflows, or `-C`/`--no-container` to ignore configured native containers and run native steps on the host. `container.type: rust` uses the official Rust image, while omitted/`auto` detects Rust projects and otherwise uses a general Debian image. Rust containers support `components`, installed with `rustup component add`; `cargo-fmt` maps to `rustfmt` and `cargo-clippy` maps to `clippy`. When a container workflow, native container workflow, or action does not set `container.platform`, `ci` maps the selected arch to a podman/docker platform such as `linux/amd64` or `linux/arm64`.
+`--arch` accepts comma-separated values and can be repeated, so `--arch x64,arm64` and `--arch x64 --arch arm64` are equivalent. `arch` accepts either one value or a YAML list and is also used as the default `container.arch` when the container arch list is omitted. Architecture is an execution setting. The selected execution architecture is exposed as `CI_ARCH`; the host machine architecture is exposed as `CI_HOST_ARCH`. Native YAML workflows can run inside a generated container with config-level `container`, workflow `defaults.container`, workflow-level `container`, or a selected tech stack; workflow-level settings override the defaults. Use `-c`/`--container` to force a generated container for native workflows, or `-C`/`--no-container` to ignore configured native containers and run native steps on the host. `tech`, `type`, `tech-stack`, and `container.type` accept `auto`, `general`, `rust`, `node`, `go`, `python`, `maven`, `gradle`, and `dotnet`; common aliases such as `npm`, `js`, `golang`, `py`, and `.net` are accepted. Omitted/`auto` detects the stack from project files and step commands, then falls back to a general Debian image. Rust containers support `components`, installed with `rustup component add`; `cargo-fmt` maps to `rustfmt` and `cargo-clippy` maps to `clippy`. When a container workflow, native container workflow, or action does not set `container.platform`, `ci` maps the selected arch to a podman/docker platform such as `linux/amd64` or `linux/arm64`.
 
 ## Actions compatibility
 

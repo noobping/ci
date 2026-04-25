@@ -168,6 +168,14 @@ struct NativeWorkflowFile {
     defaults: WorkflowOverride,
     #[serde(default, rename = "on")]
     on: EventFilter,
+    #[serde(
+        default,
+        rename = "tech",
+        alias = "type",
+        alias = "tech-stack",
+        alias = "tech_stack"
+    )]
+    tech_stack: Option<crate::config::ContainerType>,
     #[serde(default)]
     arch: ArchFilter,
     #[serde(default)]
@@ -258,6 +266,7 @@ impl NativeWorkflowFile {
     fn metadata(&self) -> WorkflowOverride {
         let local = WorkflowOverride {
             on: self.on.clone(),
+            tech_stack: self.tech_stack,
             arch: self.arch.clone(),
             branches: self.branches.clone(),
             artifacts: self.artifacts.clone(),
@@ -335,6 +344,15 @@ pub fn resolve_workflow(
         .merge(&config.workflow_override(&workflow.name))
         .merge(&local);
 
+    let mut merged_container = merged.container.clone();
+    if merged_container.kind.is_none() {
+        merged_container.kind = merged.tech_stack;
+    }
+    let mut container = config.defaults.container.merge(&merged_container);
+    if let Some(tech_stack) = config.global_tech_stack {
+        container.kind = Some(tech_stack);
+    }
+
     ResolvedWorkflow {
         name: workflow.name.clone(),
         path: workflow.path.clone(),
@@ -346,7 +364,7 @@ pub fn resolve_workflow(
         branches: merged.branches,
         artifacts: merged.artifacts,
         execution: merged.execution,
-        container: config.defaults.container.merge(&merged.container),
+        container,
         env: merged.env,
     }
 }
@@ -925,6 +943,24 @@ steps:
             .collect::<Vec<_>>();
 
         assert_eq!(arch, vec!["x64", "arm64"]);
+    }
+
+    #[test]
+    fn native_workflow_accepts_top_level_tech_stack_aliases() {
+        let file: NativeWorkflowFile = serde_yaml::from_str(
+            r#"
+tech-stack: node
+steps:
+  - run: npm run build
+"#,
+        )
+        .expect("parse workflow");
+        let metadata = file.metadata();
+
+        assert_eq!(
+            metadata.tech_stack,
+            Some(crate::config::ContainerType::Node)
+        );
     }
 
     #[test]
