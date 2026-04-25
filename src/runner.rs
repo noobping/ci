@@ -573,7 +573,6 @@ fn run_native_yaml(
             .as_deref()
             .or(step.uses.as_deref())
             .unwrap_or("run");
-        ctx.output.info(format!("--> {step_name}"));
 
         let condition_env = merged_env(base_env, &resolved.env, &step.env);
         let mut condition_inputs = BTreeMap::new();
@@ -606,6 +605,8 @@ fn run_native_yaml(
                 .verbose(format!("skipping step `{step_name}` due to condition"));
             continue;
         }
+
+        ctx.output.info(format!("--> {step_name}"));
 
         let status = if step.uses.is_some() {
             run_native_uses_step(
@@ -1008,7 +1009,6 @@ fn run_actions_run_step(
     step: &ActionRunStep,
     status: StepStatus,
 ) -> Result<i32> {
-    ctx.output.info(format!("--> {}", step.name));
     let empty_inputs = BTreeMap::new();
     let merged = merged_env(
         &merged_env(
@@ -1040,6 +1040,8 @@ fn run_actions_run_step(
         ));
         return Ok(0);
     }
+
+    ctx.output.info(format!("--> {}", step.name));
 
     let shell = step
         .shell
@@ -1098,7 +1100,6 @@ fn run_actions_uses_step(
     step: &ActionUsesStep,
     status: StepStatus,
 ) -> Result<i32> {
-    ctx.output.info(format!("--> {}", step.name));
     let empty_env = BTreeMap::new();
     let merged = merged_env(
         &merged_env(
@@ -1124,8 +1125,14 @@ fn run_actions_uses_step(
         previous_failed: status.previous_failed,
     };
     if !evaluate_condition(step.if_condition.as_deref(), &expr) {
+        ctx.output.verbose(format!(
+            "skipping action step `{}` due to condition",
+            step.name
+        ));
         return Ok(0);
     }
+
+    ctx.output.info(format!("--> {}", step.name));
 
     let invocation = BuiltinStepInvocation {
         workflow_name: &execution.workflow.name,
