@@ -696,23 +696,32 @@ fn prepare_native_container_image(
 
     validate_container_packages(&resolved.container.packages)?;
     let components = normalized_rust_components(&resolved.container.components)?;
-    let tag = format!(
+    let image_name = generated_native_container_image_name(&resolved.name, platform);
+    let file_stem = format!(
         "ci-{}-{}",
         sanitize_component(&resolved.name),
         sanitize_component(platform)
     );
     let dir = ctx.repo.state_dir.join("containers");
     fs::create_dir_all(&dir)?;
-    let file = dir.join(format!("{tag}.Containerfile"));
+    let file = dir.join(format!("{file_stem}.Containerfile"));
     fs::write(
         &file,
         generated_native_containerfile(&base_image, &resolved.container.packages, &components),
     )?;
-    let build_status = backend.build(&file, &dir, &tag, Some(platform))?;
+    let build_status = backend.build(&file, &dir, &image_name, Some(platform))?;
     Ok(PreparedNativeContainerImage {
-        image: tag,
+        image: image_name,
         build_status,
     })
+}
+
+fn generated_native_container_image_name(workflow_name: &str, platform: &str) -> String {
+    format!(
+        "localhost/ci-{}-{}:latest",
+        sanitize_component(workflow_name),
+        sanitize_component(platform)
+    )
 }
 
 fn native_container_base_image(
@@ -2938,9 +2947,9 @@ mod tests {
     use crate::git::CleanIgnoredMode;
 
     use super::{
-        evaluate_condition, executable_exists, generated_native_containerfile,
-        normalized_rust_components, parse_cleanup_ignored_mode, parse_path_list, run_export_step,
-        ExpressionContext,
+        evaluate_condition, executable_exists, generated_native_container_image_name,
+        generated_native_containerfile, normalized_rust_components, parse_cleanup_ignored_mode,
+        parse_path_list, run_export_step, ExpressionContext,
     };
 
     fn expr_ctx<'a>(
@@ -3129,6 +3138,14 @@ mod tests {
                 .find("rustup component add")
                 .expect("components line")
                 < content.find("apt-get install").expect("package line")
+        );
+    }
+
+    #[test]
+    fn generated_container_image_name_uses_localhost_reference() {
+        assert_eq!(
+            generated_native_container_image_name("build", "linux/amd64"),
+            "localhost/ci-build-linux-amd64:latest"
         );
     }
 
