@@ -110,9 +110,13 @@ ci list
 ci build
 ci run --event pre-push build
 ci run --arch x64,arm64 --tech rust build
+ci explain build --arch x64 --tech rust
+ci schema workflow
 ci install --mode link --hooks pre-commit,pre-push
 ci man --dir ~/.local/share/man/man1
 .EE
+.SH PRECEDENCE
+CLI flags override workflow fields, workflow fields override workflow defaults, workflow defaults override .ci/config.yml, and config overrides auto-detection.
 .SH NATIVE WORKFLOW EXAMPLE
 .EX
 name: build
@@ -123,6 +127,8 @@ tech: rust
 container:
   arch: [x64, arm64]
   components: [cargo-fmt, cargo-clippy]
+  env:
+    RUST_BACKTRACE: "1"
 steps:
   - run: cargo fmt --check
   - run: cargo test --all
@@ -143,6 +149,7 @@ arch: [x64, arm64]
 container:
   packages: [htop]
   components: [cargo-fmt, cargo-clippy]
+  volumes: ["~/.cache/my-project:/cache"]
 branches:
   allow: [main, develop]
 .EE
@@ -181,6 +188,7 @@ ci run --no-container build
 .SH NOTES
 Unknown top-level commands are treated as workflow names, so ci build is equivalent to ci run build.
 Use --container to force native workflows into containers, and --no-container to run them on the host.
+Native containers use stack-aware dependency cache mounts under .git/ci/container-cache.
 "#,
         ),
         "ci-list" => Some(
@@ -261,7 +269,19 @@ ci explain build
 ci explain pre-push
 .EE
 .SH NOTES
-Use explain when a workflow did not run and you need to see event, branch, and selection reasons.
+Use explain when a workflow did not run and you need to see event, branch, arch, container, and step condition reasons.
+"#,
+        ),
+        "ci-schema" => Some(
+            r#"
+.SH EXAMPLES
+.EX
+ci schema
+ci schema config
+ci schema workflow
+.EE
+.SH NOTES
+Prints JSON Schema for editor integration and external validation tooling.
 "#,
         ),
         "ci-clean" => Some(

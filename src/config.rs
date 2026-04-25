@@ -6,9 +6,10 @@ use std::str::FromStr;
 
 use clap::ValueEnum;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_yaml::Value;
 
 use crate::cli::GlobalOptions;
-use crate::error::Result;
+use crate::error::{CiError, Result};
 use crate::repo::RepoInfo;
 
 const DEFAULT_BRANCHES: &[&str] = &["main", "master", "develop", "development"];
@@ -211,22 +212,45 @@ pub enum ContainerType {
     Dotnet,
 }
 
+impl ContainerType {
+    pub fn as_name(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::General => "general",
+            Self::Rust => "rust",
+            Self::Node => "node",
+            Self::Go => "go",
+            Self::Python => "python",
+            Self::Maven => "maven",
+            Self::Gradle => "gradle",
+            Self::Dotnet => "dotnet",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ContainerConfig {
     #[serde(rename = "type")]
     pub kind: Option<ContainerType>,
     pub image: Option<String>,
     pub platform: Option<String>,
+    #[serde(alias = "working-directory", alias = "working_directory")]
+    pub workdir: Option<String>,
     #[serde(default)]
     pub arch: ArchFilter,
     #[serde(default)]
     pub packages: Vec<String>,
     #[serde(default)]
     pub components: Vec<String>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    #[serde(default)]
+    pub volumes: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ActionsConfig {
+    #[serde(alias = "node-image")]
     pub node_image: Option<String>,
 }
 
@@ -268,6 +292,7 @@ pub struct DefaultsConfig {
     pub shell: Option<String>,
     pub quiet: Option<bool>,
     pub silent: Option<bool>,
+    #[serde(alias = "fail-fast")]
     pub fail_fast: Option<bool>,
     #[serde(
         default,
@@ -281,11 +306,17 @@ pub struct DefaultsConfig {
     pub arch: ArchFilter,
     #[serde(default)]
     pub container: ContainerConfig,
+    #[serde(alias = "container-runtime")]
     pub container_runtime: Option<ContainerRuntime>,
+    #[serde(alias = "git-mode")]
     pub git_mode: Option<GitMode>,
+    #[serde(alias = "git-image")]
     pub git_image: Option<String>,
+    #[serde(alias = "recursive-checkout")]
     pub recursive_checkout: Option<bool>,
+    #[serde(alias = "artifact-store")]
     pub artifact_store: Option<PathBuf>,
+    #[serde(alias = "actions-cache")]
     pub actions_cache: Option<PathBuf>,
 
     #[serde(default)]
@@ -416,7 +447,10 @@ impl ResolvedConfig {
             .unwrap_or_else(|| repo.ci_dir.join("config.yml"));
         let loaded = path.exists();
         let file: ConfigFile = if loaded {
-            serde_yaml::from_str(&fs::read_to_string(&path)?)?
+            let raw = fs::read_to_string(&path)?;
+            let value: Value = serde_yaml::from_str(&raw)?;
+            validate_config_keys(&value, &path)?;
+            serde_yaml::from_str(&raw)?
         } else {
             ConfigFile::default()
         };
@@ -630,6 +664,7 @@ impl ContainerConfig {
             kind: other.kind.or(self.kind),
             image: other.image.clone().or_else(|| self.image.clone()),
             platform: other.platform.clone().or_else(|| self.platform.clone()),
+            workdir: other.workdir.clone().or_else(|| self.workdir.clone()),
             arch: self.arch.merged(&other.arch),
             packages: if other.packages.is_empty() {
                 self.packages.clone()
@@ -640,6 +675,18 @@ impl ContainerConfig {
                 self.components.clone()
             } else {
                 other.components.clone()
+            },
+            env: {
+                let mut env = self.env.clone();
+                for (key, value) in &other.env {
+                    env.insert(key.clone(), value.clone());
+                }
+                env
+            },
+            volumes: if other.volumes.is_empty() {
+                self.volumes.clone()
+            } else {
+                other.volumes.clone()
             },
         }
     }
@@ -653,9 +700,203 @@ pub fn path_relative_to(base: &Path, path: &Path) -> PathBuf {
     }
 }
 
+fn validate_config_keys(value: &Value, path: &Path) -> Result<()> {
+    validate_mapping(value, path, "config", ROOT_CONFIG_KEYS)?;
+    for (key, child) in mapping_entries(value, path, "config")? {
+        match key.as_str() {
+            "defaults" => validate_defaults_keys(child, path, "defaults")?,
+            "hooks" | "workflows" => {
+                for (name, workflow) in mapping_entries(child, path, &key)? {
+                    validate_workflow_override_keys(workflow, path, &format!("{key}.{name}"))?;
+                }
+            }
+            "actions" => validate_mapping(child, path, "actions", ACTIONS_KEYS)?,
+            key if DEFAULT_KEYS.contains(&key) => validate_default_child(key, child, path, key)?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_defaults_keys(value: &Value, path: &Path, label: &str) -> Result<()> {
+    validate_mapping(value, path, label, DEFAULT_KEYS)?;
+    for (key, child) in mapping_entries(value, path, label)? {
+        validate_default_child(&key, child, path, &format!("{label}.{key}"))?;
+    }
+    Ok(())
+}
+
+fn validate_workflow_override_keys(value: &Value, path: &Path, label: &str) -> Result<()> {
+    validate_mapping(value, path, label, WORKFLOW_OVERRIDE_KEYS)?;
+    for (key, child) in mapping_entries(value, path, label)? {
+        match key.as_str() {
+            "branches" => validate_mapping(child, path, &format!("{label}.branches"), BRANCH_KEYS)?,
+            "artifacts" => {
+                validate_mapping(child, path, &format!("{label}.artifacts"), ARTIFACT_KEYS)?
+            }
+            "execution" => {
+                validate_mapping(child, path, &format!("{label}.execution"), EXECUTION_KEYS)?
+            }
+            "container" => {
+                validate_mapping(child, path, &format!("{label}.container"), CONTAINER_KEYS)?
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_default_child(key: &str, value: &Value, path: &Path, label: &str) -> Result<()> {
+    match key {
+        "branches" => validate_mapping(value, path, label, BRANCH_KEYS),
+        "container" => validate_mapping(value, path, label, CONTAINER_KEYS),
+        _ => Ok(()),
+    }
+}
+
+fn validate_mapping(value: &Value, path: &Path, label: &str, allowed: &[&str]) -> Result<()> {
+    for (key, _) in mapping_entries(value, path, label)? {
+        if !allowed.contains(&key.as_str()) {
+            return Err(CiError::Usage(format!(
+                "{} has unknown key `{}` in {}; run `ci schema {}` for supported fields",
+                path.display(),
+                key,
+                label,
+                if label.starts_with("workflows") || label.starts_with("hooks") {
+                    "workflow"
+                } else {
+                    "config"
+                }
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn mapping_entries<'a>(
+    value: &'a Value,
+    path: &Path,
+    label: &str,
+) -> Result<Vec<(String, &'a Value)>> {
+    let Some(mapping) = value.as_mapping() else {
+        return Err(CiError::Usage(format!(
+            "{} section `{label}` must be a mapping",
+            path.display()
+        )));
+    };
+    mapping
+        .iter()
+        .map(|(key, value)| {
+            key.as_str()
+                .map(|key| (key.to_string(), value))
+                .ok_or_else(|| {
+                    CiError::Usage(format!(
+                        "{} section `{label}` contains a non-string key",
+                        path.display()
+                    ))
+                })
+        })
+        .collect()
+}
+
+const ROOT_CONFIG_KEYS: &[&str] = &[
+    "shell",
+    "quiet",
+    "silent",
+    "fail_fast",
+    "fail-fast",
+    "tech",
+    "type",
+    "tech-stack",
+    "tech_stack",
+    "arch",
+    "container",
+    "container_runtime",
+    "container-runtime",
+    "git_mode",
+    "git-mode",
+    "git_image",
+    "git-image",
+    "recursive_checkout",
+    "recursive-checkout",
+    "artifact_store",
+    "artifact-store",
+    "actions_cache",
+    "actions-cache",
+    "branches",
+    "defaults",
+    "hooks",
+    "workflows",
+    "actions",
+];
+
+const DEFAULT_KEYS: &[&str] = &[
+    "shell",
+    "quiet",
+    "silent",
+    "fail_fast",
+    "fail-fast",
+    "tech",
+    "type",
+    "tech-stack",
+    "tech_stack",
+    "arch",
+    "container",
+    "container_runtime",
+    "container-runtime",
+    "git_mode",
+    "git-mode",
+    "git_image",
+    "git-image",
+    "recursive_checkout",
+    "recursive-checkout",
+    "artifact_store",
+    "artifact-store",
+    "actions_cache",
+    "actions-cache",
+    "branches",
+];
+
+const WORKFLOW_OVERRIDE_KEYS: &[&str] = &[
+    "on",
+    "tech",
+    "type",
+    "tech-stack",
+    "tech_stack",
+    "arch",
+    "branches",
+    "artifacts",
+    "execution",
+    "container",
+    "env",
+];
+
+const CONTAINER_KEYS: &[&str] = &[
+    "type",
+    "image",
+    "platform",
+    "workdir",
+    "working-directory",
+    "working_directory",
+    "arch",
+    "packages",
+    "components",
+    "env",
+    "volumes",
+];
+
+const BRANCH_KEYS: &[&str] = &["allow", "only"];
+const ARTIFACT_KEYS: &[&str] = &["paths", "mode", "destination"];
+const EXECUTION_KEYS: &[&str] = &["workspace", "shell"];
+const ACTIONS_KEYS: &[&str] = &["node_image", "node-image"];
+
 #[cfg(test)]
 mod tests {
-    use super::{default_container_config, ConfigFile, ContainerType};
+    use std::path::Path;
+
+    use serde_yaml::Value;
+
+    use super::{default_container_config, validate_config_keys, ConfigFile, ContainerType};
 
     #[test]
     fn defaults_arch_accepts_single_value_or_list() {
@@ -712,6 +953,10 @@ workflows:
         - htop
       components:
         - cargo-fmt
+      env:
+        RUST_LOG: debug
+      volumes:
+        - ~/.cache/ci:/cache
 "#,
         )
         .expect("parse container config");
@@ -729,6 +974,11 @@ workflows:
         );
         assert_eq!(container.packages, vec!["htop"]);
         assert_eq!(container.components, vec!["cargo-fmt"]);
+        assert_eq!(
+            container.env.get("RUST_LOG").map(String::as_str),
+            Some("debug")
+        );
+        assert_eq!(container.volumes, vec!["~/.cache/ci:/cache"]);
     }
 
     #[test]
@@ -876,5 +1126,22 @@ defaults:
                 .collect::<Vec<_>>(),
             vec!["arm64"]
         );
+    }
+
+    #[test]
+    fn config_validation_rejects_unknown_keys() {
+        let value: Value = serde_yaml::from_str(
+            r#"
+defaults:
+  contaner:
+    type: rust
+"#,
+        )
+        .expect("parse yaml value");
+
+        let err = validate_config_keys(&value, Path::new(".ci/config.yml"))
+            .expect_err("unknown key should be rejected");
+
+        assert!(err.to_string().contains("unknown key `contaner`"));
     }
 }

@@ -2,34 +2,20 @@ on:
   - manual
   - pre-push
 
+tech: rust
+
 steps:
   - name: format
-    if: exists(cargo)
     run: cargo fmt --check
-  - name: format
-    if: missing(cargo) and exists(toolbox)
-    run: toolbox run cargo fmt --check
 
   - name: lint
-    if: exists(cargo)
     run: cargo clippy --all-targets -- -D warnings
-  - name: 
-    if: missing(cargo) and exists(toolbox)
-    run: toolbox run cargo clippy --all-targets -- -D warnings
 
   - name: test
-    if: exists(cargo)
     run: cargo test --all
-  - name: 
-    if: missing(cargo) and exists(toolbox)
-    run: toolbox run cargo test --all
 
   - name: build
-    if: exists(cargo)
     run: cargo build --release
-  - name: 
-    if: missing(cargo) and exists(toolbox)
-    run: toolbox run cargo build --release
 
   - name: install executable
     if: exists(src)
@@ -46,11 +32,13 @@ steps:
     replace: true
 
   - name: install bash completion
+    if: arch(host)
     container: false
     run: |
       mkdir -p ~/.local/share/bash-completion/completions
       ci completion bash > ~/.local/share/bash-completion/completions/ci
   - name: install manual
+    if: arch(host)
     container: false
     run: |
       mkdir -p ~/.local/share/man/man1

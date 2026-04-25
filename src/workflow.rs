@@ -12,7 +12,7 @@ use crate::config::{
     ArchFilter, ArtifactConfig, BranchConfig, ContainerConfig, EventFilter, ExecutionConfig,
     ResolvedConfig, WorkflowOverride,
 };
-use crate::error::Result;
+use crate::error::{CiError, Result};
 use crate::repo::RepoInfo;
 
 pub const CLIENT_HOOKS: &[&str] = &[
@@ -653,7 +653,10 @@ fn discover_actions_dir(
 }
 
 fn discover_native_yaml(base: &Path, path: &Path) -> Result<Workflow> {
-    let file: NativeWorkflowFile = serde_yaml::from_str(&fs::read_to_string(path)?)?;
+    let raw = fs::read_to_string(path)?;
+    let value: Value = serde_yaml::from_str(&raw)?;
+    validate_native_workflow_keys(&value, path)?;
+    let file: NativeWorkflowFile = serde_yaml::from_str(&raw)?;
     let metadata = file.metadata();
     let steps = file
         .steps
@@ -704,7 +707,10 @@ fn load_directory_metadata(dir: Option<&Path>) -> Result<WorkflowOverride> {
     for file_name in ["workflow.yml", "workflow.yaml"] {
         let path = dir.join(file_name);
         if path.exists() {
-            let file: NativeWorkflowFile = serde_yaml::from_str(&fs::read_to_string(path)?)?;
+            let raw = fs::read_to_string(&path)?;
+            let value: Value = serde_yaml::from_str(&raw)?;
+            validate_native_workflow_keys(&value, &path)?;
+            let file: NativeWorkflowFile = serde_yaml::from_str(&raw)?;
             return Ok(file.metadata());
         }
     }
@@ -787,6 +793,130 @@ fn is_executable(path: &Path) -> Result<bool> {
     Ok(mode & 0o111 != 0)
 }
 
+fn validate_native_workflow_keys(value: &Value, path: &Path) -> Result<()> {
+    validate_mapping(value, path, "workflow", NATIVE_WORKFLOW_KEYS)?;
+    for (key, child) in mapping_entries(value, path, "workflow")? {
+        match key.as_str() {
+            "defaults" => validate_workflow_override_section(child, path, "defaults")?,
+            "branches" => validate_mapping(child, path, "branches", BRANCH_KEYS)?,
+            "artifacts" => validate_mapping(child, path, "artifacts", ARTIFACT_KEYS)?,
+            "execution" => validate_mapping(child, path, "execution", EXECUTION_KEYS)?,
+            "container" => validate_mapping(child, path, "container", CONTAINER_KEYS)?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_workflow_override_section(value: &Value, path: &Path, label: &str) -> Result<()> {
+    validate_mapping(value, path, label, WORKFLOW_OVERRIDE_KEYS)?;
+    for (key, child) in mapping_entries(value, path, label)? {
+        match key.as_str() {
+            "branches" => validate_mapping(child, path, &format!("{label}.branches"), BRANCH_KEYS)?,
+            "artifacts" => {
+                validate_mapping(child, path, &format!("{label}.artifacts"), ARTIFACT_KEYS)?
+            }
+            "execution" => {
+                validate_mapping(child, path, &format!("{label}.execution"), EXECUTION_KEYS)?
+            }
+            "container" => {
+                validate_mapping(child, path, &format!("{label}.container"), CONTAINER_KEYS)?
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_mapping(value: &Value, path: &Path, label: &str, allowed: &[&str]) -> Result<()> {
+    for (key, _) in mapping_entries(value, path, label)? {
+        if !allowed.contains(&key.as_str()) {
+            return Err(CiError::Usage(format!(
+                "{} has unknown key `{}` in {}; run `ci schema workflow` for supported fields",
+                path.display(),
+                key,
+                label
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn mapping_entries<'a>(
+    value: &'a Value,
+    path: &Path,
+    label: &str,
+) -> Result<Vec<(String, &'a Value)>> {
+    let Some(mapping) = value.as_mapping() else {
+        return Err(CiError::Usage(format!(
+            "{} section `{label}` must be a mapping",
+            path.display()
+        )));
+    };
+    mapping
+        .iter()
+        .map(|(key, value)| {
+            key.as_str()
+                .map(|key| (key.to_string(), value))
+                .ok_or_else(|| {
+                    CiError::Usage(format!(
+                        "{} section `{label}` contains a non-string key",
+                        path.display()
+                    ))
+                })
+        })
+        .collect()
+}
+
+const NATIVE_WORKFLOW_KEYS: &[&str] = &[
+    "name",
+    "defaults",
+    "on",
+    "tech",
+    "type",
+    "tech-stack",
+    "tech_stack",
+    "arch",
+    "branches",
+    "artifacts",
+    "execution",
+    "container",
+    "env",
+    "steps",
+];
+
+const WORKFLOW_OVERRIDE_KEYS: &[&str] = &[
+    "on",
+    "tech",
+    "type",
+    "tech-stack",
+    "tech_stack",
+    "arch",
+    "branches",
+    "artifacts",
+    "execution",
+    "container",
+    "env",
+];
+
+const CONTAINER_KEYS: &[&str] = &[
+    "type",
+    "image",
+    "platform",
+    "workdir",
+    "working-directory",
+    "working_directory",
+    "arch",
+    "packages",
+    "components",
+    "env",
+    "volumes",
+];
+
+const BRANCH_KEYS: &[&str] = &["allow", "only"];
+const ARTIFACT_KEYS: &[&str] = &["paths", "mode", "destination"];
+const EXECUTION_KEYS: &[&str] = &["workspace", "shell"];
+
 fn stringify_yaml_map(map: BTreeMap<String, Value>) -> BTreeMap<String, String> {
     map.into_iter()
         .map(|(key, value)| (key, stringify_yaml_value(&value)))
@@ -821,7 +951,9 @@ impl Workflow {
 mod tests {
     use std::path::Path;
 
-    use super::NativeWorkflowFile;
+    use serde_yaml::Value;
+
+    use super::{validate_native_workflow_keys, NativeWorkflowFile};
 
     #[test]
     fn native_clean_step_accepts_inline_run_and_top_level_options() {
@@ -993,5 +1125,23 @@ steps:
             vec!["arm64"]
         );
         assert_eq!(metadata.container.components, vec!["cargo-fmt"]);
+    }
+
+    #[test]
+    fn native_workflow_validation_rejects_unknown_top_level_keys() {
+        let value: Value = serde_yaml::from_str(
+            r#"
+contaner:
+  type: rust
+steps:
+  - run: echo ok
+"#,
+        )
+        .expect("parse yaml value");
+
+        let err = validate_native_workflow_keys(&value, Path::new(".ci/build.yml"))
+            .expect_err("unknown key should be rejected");
+
+        assert!(err.to_string().contains("unknown key `contaner`"));
     }
 }

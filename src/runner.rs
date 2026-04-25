@@ -12,47 +12,30 @@ use fs2::FileExt;
 use glob::glob;
 use serde::Deserialize;
 
-use crate::actions::{
-    ActionRunStep, ActionService, ActionStep, ActionUsesStep, ActionsJob, ActionsWorkflow,
-};
+use crate::actions::{ActionRunStep, ActionStep, ActionUsesStep, ActionsJob, ActionsWorkflow};
 use crate::artifacts::ArtifactSession;
 use crate::cli::{GlobalOptions, HookArgs, InitArgs, ListArgs, RunArgs, SelfArgs};
-use crate::config::{
-    Architecture, ContainerRuntime, ContainerType, EventFilter, ResolvedConfig, WorkflowOverride,
+use crate::conditions::{
+    evaluate_condition, evaluate_condition_with_probe, interpolate_expressions, ExpressionContext,
+};
+use crate::config::{Architecture, ContainerRuntime, ContainerType, ResolvedConfig};
+use crate::containers::{
+    container_platform, generated_native_container_image_name, generated_native_containerfile,
+    normalized_rust_components, validate_container_image_ref, validate_container_packages,
+    ContainerBackend, ContainerCommandExistsSpec, ContainerShellSpec,
+};
+use crate::defaults::{
+    default_build_stack, detect_default_build_stack, generated_default_workflows,
+    init_build_workflow_content,
 };
 use crate::error::{CiError, Result};
-use crate::git::{
-    command_exists, preferred_container_runtime, sanitize_component, CleanIgnoredMode, GitService,
-};
+use crate::git::{command_exists, sanitize_component, CleanIgnoredMode, GitService};
 use crate::output::Output;
 use crate::repo::RepoInfo;
 use crate::workflow::{
-    self, canonical_events, kind_name, provider_name, select_workflows, NativeStep, NativeWorkflow,
-    ResolvedWorkflow, Workflow, WorkflowKind, WorkflowMatch, WorkflowProvider, WorkflowSource,
+    self, canonical_events, kind_name, provider_name, select_workflows, NativeStep,
+    ResolvedWorkflow, Workflow, WorkflowMatch, WorkflowSource,
 };
-
-const DEFAULT_RUST_WORKFLOW: &str = r#"name: build
-on:
-  - manual
-  - pre-push
-steps:
-  - name: Format
-    run: cargo fmt --check
-  - name: Lint
-    run: cargo clippy --all-targets -- -D warnings
-  - name: Test
-    run: cargo test --all
-  - name: Build
-    run: cargo build --release
-"#;
-
-const DEFAULT_SHELL_WORKFLOW: &str = r#"name: build
-on:
-  - manual
-steps:
-  - name: Build
-    run: echo "Add your build command to .ci/build.yml"
-"#;
 
 #[derive(Clone, Debug)]
 pub struct AppContext {
@@ -136,18 +119,6 @@ fn container_override(global: &GlobalOptions) -> ContainerOverride {
     } else {
         ContainerOverride::Auto
     }
-}
-
-#[derive(Clone, Debug)]
-struct ExpressionContext<'a> {
-    event: &'a str,
-    branch: Option<&'a str>,
-    root: &'a Path,
-    env: &'a BTreeMap<String, String>,
-    matrix: &'a BTreeMap<String, String>,
-    inputs: &'a BTreeMap<String, String>,
-    success: bool,
-    previous_failed: bool,
 }
 
 #[derive(Default)]
@@ -346,13 +317,7 @@ pub fn cmd_init(ctx: &AppContext, args: &InitArgs) -> Result<i32> {
         )));
     }
 
-    let content = match default_build_stack(&ctx.repo.root, default_tech_stack_override(ctx)) {
-        Some(stack) if stack.container_type == ContainerType::Rust => {
-            DEFAULT_RUST_WORKFLOW.to_string()
-        }
-        Some(stack) => default_build_workflow_content(&stack),
-        None => DEFAULT_SHELL_WORKFLOW.to_string(),
-    };
+    let content = init_build_workflow_content(&ctx.repo.root, default_tech_stack_override(ctx));
 
     fs::write(&build, content)?;
     ctx.output.info(format!("Created {}", build.display()));
@@ -455,7 +420,7 @@ fn execute_run(ctx: &AppContext, request: RunRequest) -> Result<i32> {
     Ok(last_failure)
 }
 
-fn available_workflows(ctx: &AppContext) -> Result<Vec<Workflow>> {
+pub(crate) fn available_workflows(ctx: &AppContext) -> Result<Vec<Workflow>> {
     let workflows = workflow::discover_all(&ctx.repo)?;
     if workflows.is_empty() {
         Ok(generated_default_workflows(
@@ -469,178 +434,12 @@ fn available_workflows(ctx: &AppContext) -> Result<Vec<Workflow>> {
     }
 }
 
-#[derive(Clone, Debug)]
-struct DefaultBuildStack {
-    container_type: ContainerType,
-    build_command: String,
-    host_tool: String,
-}
-
 fn default_tech_stack_override(ctx: &AppContext) -> Option<ContainerType> {
     ctx.global
         .tech_stack
         .or(ctx.config.global_tech_stack)
         .or(ctx.config.defaults.container.kind)
         .filter(|kind| !matches!(kind, ContainerType::Auto | ContainerType::General))
-}
-
-fn default_build_stack(
-    repo_root: &Path,
-    requested_stack: Option<ContainerType>,
-) -> Option<DefaultBuildStack> {
-    match requested_stack.unwrap_or(ContainerType::Auto) {
-        ContainerType::Auto => detect_default_build_stack(repo_root),
-        ContainerType::General => None,
-        stack => default_build_stack_for_type(repo_root, stack),
-    }
-}
-
-fn detect_default_build_stack(repo_root: &Path) -> Option<DefaultBuildStack> {
-    if repo_root.join("Cargo.toml").exists() {
-        return default_build_stack_for_type(repo_root, ContainerType::Rust);
-    }
-    if repo_root.join("package.json").exists() {
-        return default_build_stack_for_type(repo_root, ContainerType::Node);
-    }
-    if repo_root.join("go.mod").exists() {
-        return default_build_stack_for_type(repo_root, ContainerType::Go);
-    }
-    if repo_root.join("pom.xml").exists() {
-        return default_build_stack_for_type(repo_root, ContainerType::Maven);
-    }
-    if gradle_project_exists(repo_root) {
-        return default_build_stack_for_type(repo_root, ContainerType::Gradle);
-    }
-    if dotnet_project_exists(repo_root) {
-        return default_build_stack_for_type(repo_root, ContainerType::Dotnet);
-    }
-    if repo_root.join("pyproject.toml").exists() || repo_root.join("setup.py").exists() {
-        return default_build_stack_for_type(repo_root, ContainerType::Python);
-    }
-    None
-}
-
-fn default_build_stack_for_type(
-    repo_root: &Path,
-    stack: ContainerType,
-) -> Option<DefaultBuildStack> {
-    let (build_command, host_tool) = match stack {
-        ContainerType::Rust => ("cargo build".to_string(), "cargo".to_string()),
-        ContainerType::Node => (
-            "npm install && npm run build --if-present".to_string(),
-            "npm".to_string(),
-        ),
-        ContainerType::Go => ("go build ./...".to_string(), "go".to_string()),
-        ContainerType::Python => (
-            "python3 -m pip install --upgrade build && python3 -m build".to_string(),
-            "python3".to_string(),
-        ),
-        ContainerType::Maven => ("mvn package".to_string(), "mvn".to_string()),
-        ContainerType::Gradle if repo_root.join("gradlew").exists() => (
-            "chmod +x ./gradlew && ./gradlew build".to_string(),
-            "java".to_string(),
-        ),
-        ContainerType::Gradle => ("gradle build".to_string(), "gradle".to_string()),
-        ContainerType::Dotnet => ("dotnet build".to_string(), "dotnet".to_string()),
-        ContainerType::Auto | ContainerType::General => return None,
-    };
-
-    Some(DefaultBuildStack {
-        container_type: stack,
-        build_command,
-        host_tool,
-    })
-}
-
-fn default_build_workflow_content(stack: &DefaultBuildStack) -> String {
-    format!(
-        "name: build\n\
-         on:\n\
-           - manual\n\
-           - pre-push\n\
-         steps:\n\
-           - name: Build\n\
-             run: {}\n",
-        stack.build_command
-    )
-}
-
-fn gradle_project_exists(repo_root: &Path) -> bool {
-    [
-        "gradlew",
-        "build.gradle",
-        "build.gradle.kts",
-        "settings.gradle",
-        "settings.gradle.kts",
-    ]
-    .iter()
-    .any(|name| repo_root.join(name).exists())
-}
-
-fn dotnet_project_exists(repo_root: &Path) -> bool {
-    fs::read_dir(repo_root)
-        .map(|entries| {
-            entries.filter_map(|entry| entry.ok()).any(|entry| {
-                entry
-                    .path()
-                    .extension()
-                    .and_then(|value| value.to_str())
-                    .is_some_and(|extension| {
-                        matches!(extension.to_ascii_lowercase().as_str(), "sln" | "csproj")
-                    })
-            })
-        })
-        .unwrap_or(false)
-}
-
-fn generated_default_workflows(
-    repo_root: &Path,
-    ci_dir: &Path,
-    requested_stack: Option<ContainerType>,
-    command_available: &dyn Fn(&str) -> bool,
-) -> Vec<Workflow> {
-    default_build_stack(repo_root, requested_stack)
-        .map(|stack| generated_build_workflow(ci_dir, &stack, command_available(&stack.host_tool)))
-        .into_iter()
-        .collect()
-}
-
-fn generated_build_workflow(
-    ci_dir: &Path,
-    stack: &DefaultBuildStack,
-    host_tool_available: bool,
-) -> Workflow {
-    let mut metadata = WorkflowOverride {
-        on: EventFilter::Many(vec!["manual".to_string(), "pre-push".to_string()]),
-        ..WorkflowOverride::default()
-    };
-    if !host_tool_available {
-        metadata.container.kind = Some(stack.container_type);
-    }
-
-    Workflow {
-        name: "build".to_string(),
-        path: ci_dir.join("build.yml"),
-        kind: WorkflowKind::NativeYaml,
-        provider: WorkflowProvider::Native,
-        source: WorkflowSource::NativeYaml(NativeWorkflow {
-            metadata,
-            steps: vec![NativeStep {
-                name: Some("build".to_string()),
-                run: Some(stack.build_command.clone()),
-                uses: None,
-                container: None,
-                with: BTreeMap::new(),
-                extra: BTreeMap::new(),
-                shell: None,
-                env: BTreeMap::new(),
-                if_condition: None,
-                working_directory: None,
-                continue_on_error: false,
-                timeout_minutes: None,
-            }],
-        }),
-    }
 }
 
 fn workflow_execution_arches(
@@ -799,6 +598,11 @@ fn run_native_yaml(
     let mut previous_failed = false;
     let mut workflow_failure = 0;
     let mut cache_state = CacheState::default();
+    let native_cache_mounts = if container.is_some() {
+        native_container_cache_mounts(ctx, resolved, steps)?
+    } else {
+        Vec::new()
+    };
     let empty_matrix = BTreeMap::new();
     let empty_inputs = BTreeMap::new();
     for step in steps {
@@ -808,7 +612,11 @@ fn run_native_yaml(
             .or(step.uses.as_deref())
             .unwrap_or("run");
 
-        let condition_env = merged_env(base_env, &resolved.env, &step.env);
+        let step_container = container.filter(|_| step.container.unwrap_or(true));
+        let mut condition_env = merged_env(base_env, &resolved.env, &step.env);
+        if step_container.is_some() {
+            condition_env = merged_env(&condition_env, &resolved.container.env, &BTreeMap::new());
+        }
         let mut condition_inputs = BTreeMap::new();
         let preliminary_expr = ExpressionContext {
             event: base_env
@@ -834,7 +642,6 @@ fn run_native_yaml(
             },
             ..preliminary_expr
         };
-        let step_container = container.filter(|_| step.container.unwrap_or(true));
         let should_run = if let Some(container) = step_container {
             let command_probe = |name: &str| {
                 container.backend.command_exists(
@@ -897,6 +704,9 @@ fn run_native_yaml(
                     workdir: &workdir,
                     platform: Some(&container.platform),
                     options: None,
+                    extra_volumes: &resolved.container.volumes,
+                    cache_mounts: &native_cache_mounts,
+                    container_workdir: resolved.container.workdir.as_deref(),
                 })?
             } else {
                 run_shell(shell, &script, &workdir, &condition_env)?
@@ -977,14 +787,6 @@ fn prepare_native_container_image(
     })
 }
 
-fn generated_native_container_image_name(workflow_name: &str, platform: &str) -> String {
-    format!(
-        "localhost/ci-{}-{}:latest",
-        sanitize_component(workflow_name),
-        sanitize_component(platform)
-    )
-}
-
 fn native_container_base_image(
     ctx: &AppContext,
     resolved: &ResolvedWorkflow,
@@ -1030,6 +832,42 @@ fn native_container_effective_type(
         }
         kind => kind,
     }
+}
+
+fn native_container_cache_mounts(
+    ctx: &AppContext,
+    resolved: &ResolvedWorkflow,
+    steps: &[NativeStep],
+) -> Result<Vec<(PathBuf, String)>> {
+    let stack = native_container_effective_type(ctx, resolved, steps);
+    let root = ctx
+        .repo
+        .state_dir
+        .join("container-cache")
+        .join(sanitize_component(&resolved.name))
+        .join(sanitize_component(stack.as_name()));
+    let targets: &[&str] = match stack {
+        ContainerType::Rust => &["/usr/local/cargo/registry", "/usr/local/cargo/git"],
+        ContainerType::Node => &[
+            "/root/.npm",
+            "/root/.cache/pnpm",
+            "/usr/local/share/.cache/yarn",
+        ],
+        ContainerType::Go => &["/go/pkg/mod", "/root/.cache/go-build"],
+        ContainerType::Python => &["/root/.cache/pip", "/root/.cache/uv"],
+        ContainerType::Maven => &["/root/.m2"],
+        ContainerType::Gradle => &["/home/gradle/.gradle", "/root/.gradle"],
+        ContainerType::Dotnet => &["/root/.nuget/packages"],
+        ContainerType::Auto | ContainerType::General => &[],
+    };
+
+    let mut mounts = Vec::new();
+    for target in targets {
+        let path = root.join(sanitize_component(target.trim_start_matches('/')));
+        fs::create_dir_all(&path)?;
+        mounts.push((path, (*target).to_string()));
+    }
+    Ok(mounts)
 }
 
 fn detect_native_workflow_stack(ctx: &AppContext, steps: &[NativeStep]) -> Option<ContainerType> {
@@ -1078,114 +916,6 @@ fn command_mentions_tool(run: &str, tool: &str) -> bool {
                 || (tool == "gradle" && matches!(name, "gradle" | "gradlew"))
                 || (tool == "java" && matches!(name, "gradle" | "gradlew" | "java"))
         })
-}
-
-fn normalized_rust_components(components: &[String]) -> Result<Vec<String>> {
-    let mut normalized = Vec::new();
-    for component in components {
-        let value = component.trim();
-        if value.is_empty() {
-            return Err(CiError::Usage(
-                "container component names must not be empty".to_string(),
-            ));
-        }
-        if value.contains('\0') || value.contains('\n') || value.contains('\r') {
-            return Err(CiError::Usage(format!(
-                "container component `{component}` contains unsupported control characters"
-            )));
-        }
-
-        let component = match value {
-            "cargo-fmt" => "rustfmt",
-            "cargo-clippy" => "clippy",
-            other => other,
-        };
-        if !normalized.iter().any(|item| item == component) {
-            normalized.push(component.to_string());
-        }
-    }
-    Ok(normalized)
-}
-
-fn validate_container_packages(packages: &[String]) -> Result<()> {
-    for package in packages {
-        if package.trim().is_empty() {
-            return Err(CiError::Usage(
-                "container package names must not be empty".to_string(),
-            ));
-        }
-        if package.contains('\0') || package.contains('\n') || package.contains('\r') {
-            return Err(CiError::Usage(format!(
-                "container package `{package}` contains unsupported control characters"
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn validate_container_image_ref(image: &str) -> Result<()> {
-    if image.trim().is_empty() {
-        return Err(CiError::Usage(
-            "container image must not be empty".to_string(),
-        ));
-    }
-    if image.contains('\0') || image.chars().any(char::is_whitespace) {
-        return Err(CiError::Usage(
-            "container image contains unsupported whitespace or control characters".to_string(),
-        ));
-    }
-    Ok(())
-}
-
-fn generated_native_containerfile(
-    base_image: &str,
-    packages: &[String],
-    components: &[String],
-) -> String {
-    let mut content = format!("FROM {base_image}\n");
-
-    if !components.is_empty() {
-        let components = components
-            .iter()
-            .map(|component| sh_single_quote(component))
-            .collect::<Vec<_>>()
-            .join(" ");
-        content.push_str(&format!("RUN rustup component add {components}\n"));
-    }
-
-    if packages.is_empty() {
-        return content;
-    }
-
-    let packages = packages
-        .iter()
-        .map(|package| sh_single_quote(package))
-        .collect::<Vec<_>>()
-        .join(" ");
-    content.push_str(&format!(
-        "RUN set -eux; \\\n\
-             if command -v apt-get >/dev/null 2>&1; then \\\n\
-                 apt-get update; \\\n\
-                 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends {packages}; \\\n\
-                 rm -rf /var/lib/apt/lists/*; \\\n\
-             elif command -v dnf >/dev/null 2>&1; then \\\n\
-                 dnf install -y {packages}; \\\n\
-                 dnf clean all; \\\n\
-             elif command -v apk >/dev/null 2>&1; then \\\n\
-                 apk add --no-cache {packages}; \\\n\
-             elif command -v zypper >/dev/null 2>&1; then \\\n\
-                 zypper --non-interactive install {packages}; \\\n\
-                 zypper clean --all; \\\n\
-             else \\\n\
-                 echo 'no supported package manager found in container image' >&2; \\\n\
-                 exit 1; \\\n\
-             fi\n"
-    ));
-    content
-}
-
-fn sh_single_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn run_native_uses_step(
@@ -1263,19 +993,14 @@ fn run_container_workflow(
         repo_root: &ctx.repo.root,
         shell: &ctx.config.defaults.shell,
         script: "true",
-        env,
+        env: &container_step_env(env, resolved),
         workdir: &ctx.repo.root,
         platform: Some(&platform),
         options: None,
+        extra_volumes: &resolved.container.volumes,
+        cache_mounts: &[],
+        container_workdir: resolved.container.workdir.as_deref(),
     })
-}
-
-fn container_platform(resolved: &ResolvedWorkflow, arch: &Architecture) -> String {
-    resolved
-        .container
-        .platform
-        .clone()
-        .unwrap_or_else(|| arch.platform())
 }
 
 fn run_actions_workflow(
@@ -1480,6 +1205,9 @@ fn run_actions_run_step(
                 workdir: &workdir,
                 platform: Some(&platform),
                 options: container.options.as_deref(),
+                extra_volumes: &[],
+                cache_mounts: &[],
+                container_workdir: None,
             })
     } else {
         run_shell(shell, &script, &workdir, &merged)
@@ -1595,6 +1323,9 @@ fn run_actions_uses_step(
                 workdir: &ctx.repo.root,
                 platform: Some(&platform),
                 options: None,
+                extra_volumes: &[],
+                cache_mounts: &[],
+                container_workdir: None,
             });
     }
 
@@ -1914,6 +1645,9 @@ fn run_local_action(
                     workdir: dir,
                     platform: Some(platform),
                     options: None,
+                    extra_volumes: &[],
+                    cache_mounts: &[],
+                    container_workdir: None,
                 })
             }
         }
@@ -2636,6 +2370,13 @@ fn merged_env(
     merged
 }
 
+fn container_step_env(
+    base: &BTreeMap<String, String>,
+    resolved: &ResolvedWorkflow,
+) -> BTreeMap<String, String> {
+    merged_env(base, &resolved.container.env, &BTreeMap::new())
+}
+
 fn branch_from_hook(ctx: &AppContext, hook: &str, hook_args: &[String]) -> Result<Option<String>> {
     if hook == "update" {
         return Ok(hook_args
@@ -2696,245 +2437,6 @@ impl RunLock {
 impl Drop for RunLock {
     fn drop(&mut self) {
         let _ = self.file.unlock();
-    }
-}
-
-struct ContainerShellSpec<'a> {
-    image: &'a str,
-    repo_root: &'a Path,
-    shell: &'a str,
-    script: &'a str,
-    env: &'a BTreeMap<String, String>,
-    workdir: &'a Path,
-    platform: Option<&'a str>,
-    options: Option<&'a str>,
-}
-
-struct ContainerCommandExistsSpec<'a> {
-    image: &'a str,
-    repo_root: &'a Path,
-    env: &'a BTreeMap<String, String>,
-    platform: Option<&'a str>,
-}
-
-struct ContainerBackend {
-    runtime: String,
-}
-
-impl ContainerBackend {
-    fn detect(runtime: ContainerRuntime) -> Result<Self> {
-        let runtime = match runtime {
-            ContainerRuntime::Podman => "podman".to_string(),
-            ContainerRuntime::Docker => "docker".to_string(),
-            ContainerRuntime::Auto => preferred_container_runtime(),
-        };
-
-        if !command_exists(&runtime) {
-            return Err(CiError::Message(format!(
-                "container runtime `{runtime}` is not available"
-            )));
-        }
-
-        Ok(Self { runtime })
-    }
-
-    fn build(&self, file: &Path, context: &Path, tag: &str, platform: Option<&str>) -> Result<i32> {
-        let mut command = Command::new(&self.runtime);
-        if self.runtime == "docker" && platform.is_some() {
-            command.arg("buildx").arg("build").arg("--load");
-        } else {
-            command.arg("build");
-        }
-        if let Some(platform) = platform {
-            command.arg("--platform").arg(platform);
-        }
-        command
-            .arg("-f")
-            .arg(file)
-            .arg("-t")
-            .arg(tag)
-            .arg(context)
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
-        Ok(command.status()?.code().unwrap_or(1))
-    }
-
-    fn run_shell(&self, spec: &ContainerShellSpec<'_>) -> Result<i32> {
-        let mount = self.bind_mount(spec.repo_root, "/work");
-        let container_workdir = if let Ok(relative) = spec.workdir.strip_prefix(spec.repo_root) {
-            if relative.as_os_str().is_empty() {
-                "/work".to_string()
-            } else {
-                format!("/work/{}", relative.display())
-            }
-        } else {
-            "/work".to_string()
-        };
-
-        let mut command = Command::new(&self.runtime);
-        command
-            .arg("run")
-            .arg("--rm")
-            .arg("--network")
-            .arg("host")
-            .arg("-v")
-            .arg(mount)
-            .arg("-w")
-            .arg(container_workdir);
-        if let Some(platform) = spec.platform {
-            command.arg("--platform").arg(platform);
-        }
-        if let Some(options) = spec.options {
-            for part in options.split_whitespace() {
-                command.arg(part);
-            }
-        }
-        for (key, value) in spec.env {
-            command.arg("-e").arg(format!("{key}={value}"));
-        }
-        command
-            .arg(spec.image)
-            .arg(spec.shell)
-            .arg("-c")
-            .arg(spec.script)
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
-        Ok(command.status()?.code().unwrap_or(1))
-    }
-
-    fn command_exists(&self, spec: &ContainerCommandExistsSpec<'_>, name: &str) -> Result<bool> {
-        let mount = self.bind_mount(spec.repo_root, "/work");
-        let mut command = Command::new(&self.runtime);
-        command
-            .arg("run")
-            .arg("--rm")
-            .arg("--network")
-            .arg("host")
-            .arg("-v")
-            .arg(mount)
-            .arg("-w")
-            .arg("/work");
-        if let Some(platform) = spec.platform {
-            command.arg("--platform").arg(platform);
-        }
-        for (key, value) in spec.env {
-            command.arg("-e").arg(format!("{key}={value}"));
-        }
-        command
-            .arg(spec.image)
-            .arg("/bin/sh")
-            .arg("-c")
-            .arg(format!(
-                "command -v {} >/dev/null 2>&1",
-                sh_single_quote(name)
-            ))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        Ok(command.status()?.success())
-    }
-
-    fn run_action_container(
-        &self,
-        image: &str,
-        action_dir: &Path,
-        env: &BTreeMap<String, String>,
-        entrypoint: Option<&str>,
-        args: &[String],
-        platform: Option<&str>,
-    ) -> Result<i32> {
-        let mount = self.bind_mount(action_dir, "/action");
-        let mut command = Command::new(&self.runtime);
-        command
-            .arg("run")
-            .arg("--rm")
-            .arg("--network")
-            .arg("host")
-            .arg("-v")
-            .arg(mount)
-            .arg("-w")
-            .arg("/action");
-        if let Some(platform) = platform {
-            command.arg("--platform").arg(platform);
-        }
-        if let Some(entrypoint) = entrypoint {
-            command.arg("--entrypoint").arg(entrypoint);
-        }
-        for (key, value) in env {
-            command.arg("-e").arg(format!("{key}={value}"));
-        }
-        command.arg(image);
-        for arg in args {
-            command.arg(arg);
-        }
-        command
-            .stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
-        Ok(command.status()?.code().unwrap_or(1))
-    }
-
-    fn start_service(
-        &self,
-        name: &str,
-        service: &ActionService,
-        platform: Option<&str>,
-    ) -> Result<()> {
-        let mut command = Command::new(&self.runtime);
-        command
-            .arg("run")
-            .arg("-d")
-            .arg("--rm")
-            .arg("--name")
-            .arg(name)
-            .arg("--network")
-            .arg("host");
-        if let Some(platform) = platform {
-            command.arg("--platform").arg(platform);
-        }
-        if let Some(options) = service.options.as_deref() {
-            for part in options.split_whitespace() {
-                command.arg(part);
-            }
-        }
-        for (key, value) in &service.env {
-            command.arg("-e").arg(format!("{key}={value}"));
-        }
-        command.arg(&service.image);
-        let status = command.status()?.code().unwrap_or(1);
-        if status == 0 {
-            Ok(())
-        } else {
-            Err(CiError::Message(format!(
-                "failed to start service {} from {}",
-                name, service.image
-            )))
-        }
-    }
-
-    fn bind_mount(&self, source: &Path, target: &str) -> String {
-        let mut mount = format!("{}:{target}", source.display());
-        if self.runtime == "podman" {
-            mount.push_str(":z");
-        }
-        mount
-    }
-
-    fn stop_container(&self, name: &str) -> Result<()> {
-        let status = Command::new(&self.runtime)
-            .arg("rm")
-            .arg("-f")
-            .arg(name)
-            .status()?
-            .code()
-            .unwrap_or(1);
-        if status == 0 {
-            Ok(())
-        } else {
-            Err(CiError::Message(format!("failed to stop container {name}")))
-        }
     }
 }
 
@@ -3046,434 +2548,6 @@ fn copy_recursively(source: &Path, target: &Path) -> Result<()> {
         fs::copy(source, target)?;
         Ok(())
     }
-}
-
-type ConditionCommandProbe<'a> = dyn Fn(&str) -> Result<bool> + 'a;
-
-fn evaluate_condition(expr: Option<&str>, ctx: &ExpressionContext<'_>) -> bool {
-    evaluate_condition_with_probe(expr, ctx, None).unwrap_or(false)
-}
-
-fn evaluate_condition_with_probe(
-    expr: Option<&str>,
-    ctx: &ExpressionContext<'_>,
-    command_probe: Option<&ConditionCommandProbe<'_>>,
-) -> Result<bool> {
-    let Some(expr) = expr else {
-        return Ok(ctx.success);
-    };
-    let expr = trim_expr(expr);
-
-    if let Some(parts) = split_logical_operator(expr, "||", "or") {
-        for part in parts {
-            if evaluate_condition_with_probe(Some(part), ctx, command_probe)? {
-                return Ok(true);
-            }
-        }
-        return Ok(false);
-    }
-    if let Some(parts) = split_logical_operator(expr, "&&", "and") {
-        for part in parts {
-            if !evaluate_condition_with_probe(Some(part), ctx, command_probe)? {
-                return Ok(false);
-            }
-        }
-        return Ok(true);
-    }
-    if let Some(rest) = expr.strip_prefix('!') {
-        return Ok(!evaluate_condition_with_probe(
-            Some(rest),
-            ctx,
-            command_probe,
-        )?);
-    }
-
-    match expr {
-        "true" | "always" | "always()" => return Ok(true),
-        "false" | "cancelled" | "cancelled()" => return Ok(false),
-        "success" | "success()" => return Ok(ctx.success),
-        "failure" | "failure()" => return Ok(ctx.previous_failed),
-        _ => {}
-    }
-
-    if let Some(target) = function_arg(expr, "exists") {
-        return condition_target_exists(&resolve_condition_target(target, ctx), ctx, command_probe);
-    }
-    if let Some(target) = function_arg(expr, "missing") {
-        return condition_target_exists(&resolve_condition_target(target, ctx), ctx, command_probe)
-            .map(|exists| !exists);
-    }
-    if let Some(target) = function_arg(expr, "arch") {
-        return Ok(condition_arch_matches(target, ctx));
-    }
-
-    if let Some(rest) = expr
-        .strip_prefix("startsWith(")
-        .and_then(|value| value.strip_suffix(')'))
-    {
-        let mut parts = rest.splitn(2, ',');
-        let left = parts.next().unwrap_or("").trim();
-        let right = parts
-            .next()
-            .unwrap_or("")
-            .trim()
-            .trim_matches('\'')
-            .trim_matches('"');
-        return Ok(resolve_expr_value(left, ctx)
-            .map(|value| value.starts_with(right))
-            .unwrap_or(false));
-    }
-
-    if let Some((left, right)) = expr.split_once("==") {
-        return Ok(resolve_expr_value(left.trim(), ctx)
-            .map(|value| value == trim_literal(right))
-            .unwrap_or(false));
-    }
-    if let Some((left, right)) = expr.split_once("!=") {
-        return Ok(resolve_expr_value(left.trim(), ctx)
-            .map(|value| value != trim_literal(right))
-            .unwrap_or(false));
-    }
-
-    Ok(resolve_expr_value(expr, ctx)
-        .map(|value| !value.is_empty() && value != "false")
-        .unwrap_or(false))
-}
-
-fn split_logical_operator<'a>(expr: &'a str, symbol: &str, word: &str) -> Option<Vec<&'a str>> {
-    let mut parts = Vec::new();
-    let mut start = 0;
-    let mut depth = 0usize;
-    let mut quote = None;
-    let mut chars = expr.char_indices().peekable();
-
-    while let Some((index, ch)) = chars.next() {
-        if let Some(active_quote) = quote {
-            if ch == active_quote {
-                quote = None;
-            }
-            continue;
-        }
-
-        match ch {
-            '\'' | '"' => quote = Some(ch),
-            '(' => depth += 1,
-            ')' => depth = depth.saturating_sub(1),
-            _ if depth == 0 && expr[index..].starts_with(symbol) => {
-                parts.push(expr[start..index].trim());
-                start = index + symbol.len();
-                for _ in 1..symbol.chars().count() {
-                    chars.next();
-                }
-            }
-            _ if depth == 0 && word_operator_at(expr, index, word) => {
-                parts.push(expr[start..index].trim());
-                start = index + word.len();
-                for _ in 1..word.chars().count() {
-                    chars.next();
-                }
-            }
-            _ => {}
-        }
-    }
-
-    if parts.is_empty() {
-        None
-    } else {
-        parts.push(expr[start..].trim());
-        Some(parts)
-    }
-}
-
-fn word_operator_at(expr: &str, index: usize, word: &str) -> bool {
-    expr[index..].starts_with(word)
-        && expr[..index]
-            .chars()
-            .next_back()
-            .map(|ch| !is_condition_word_char(ch))
-            .unwrap_or(true)
-        && expr[index + word.len()..]
-            .chars()
-            .next()
-            .map(|ch| !is_condition_word_char(ch))
-            .unwrap_or(true)
-}
-
-fn is_condition_word_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-')
-}
-
-fn condition_arch_matches(target: &str, ctx: &ExpressionContext<'_>) -> bool {
-    let current = ctx
-        .env
-        .get("CI_ARCH")
-        .cloned()
-        .or_else(|| env::var("CI_ARCH").ok())
-        .unwrap_or_else(|| Architecture::host().to_string());
-    let Ok(current) = current.parse::<Architecture>() else {
-        return false;
-    };
-
-    parse_path_list(target).iter().any(|value| {
-        let value = trim_literal(value);
-        let value = resolve_expr_value(&value, ctx).unwrap_or(value);
-        if matches!(
-            value
-                .trim()
-                .to_ascii_lowercase()
-                .replace(['-', ' '], "_")
-                .as_str(),
-            "host" | "host_arch" | "native"
-        ) {
-            return Architecture::host() == current;
-        }
-        value
-            .parse::<Architecture>()
-            .map(|arch| arch == current)
-            .unwrap_or(false)
-    })
-}
-
-fn interpolate_expressions(value: &str, ctx: &ExpressionContext<'_>) -> String {
-    let mut rendered = String::new();
-    let mut remaining = value;
-
-    while let Some(start) = remaining.find("${{") {
-        rendered.push_str(&remaining[..start]);
-        let after = &remaining[start + 3..];
-        if let Some(end) = after.find("}}") {
-            let expr = after[..end].trim();
-            rendered.push_str(&resolve_expr_value(expr, ctx).unwrap_or_default());
-            remaining = &after[end + 2..];
-        } else {
-            rendered.push_str(&remaining[start..]);
-            return rendered;
-        }
-    }
-
-    rendered.push_str(remaining);
-    rendered
-}
-
-fn resolve_expr_value(expr: &str, ctx: &ExpressionContext<'_>) -> Option<String> {
-    match trim_expr(expr) {
-        "github.ref" | "gitea.ref" => ctx.branch.map(|branch| format!("refs/heads/{branch}")),
-        "github.ref_name" | "gitea.ref_name" => ctx.branch.map(ToOwned::to_owned),
-        "github.event_name" | "gitea.event_name" => Some(
-            canonical_events(ctx.event)
-                .last()
-                .cloned()
-                .unwrap_or_else(|| ctx.event.to_string()),
-        ),
-        "github.workspace" | "gitea.workspace" => ctx.env.get("CI_REPO").cloned(),
-        value if value.starts_with("env.") => {
-            ctx.env.get(value.trim_start_matches("env.")).cloned()
-        }
-        value if value.starts_with("matrix.") => {
-            ctx.matrix.get(value.trim_start_matches("matrix.")).cloned()
-        }
-        value if value.starts_with("inputs.") => {
-            ctx.inputs.get(value.trim_start_matches("inputs.")).cloned()
-        }
-        value if ctx.inputs.contains_key(value) => ctx.inputs.get(value).cloned(),
-        value => Some(trim_literal(value)),
-    }
-}
-
-fn trim_expr(expr: &str) -> &str {
-    let trimmed = expr.trim();
-    trimmed
-        .strip_prefix("${{")
-        .and_then(|value| value.strip_suffix("}}"))
-        .map(str::trim)
-        .unwrap_or(trimmed)
-}
-
-fn trim_literal(value: &str) -> String {
-    value
-        .trim()
-        .trim_matches('\'')
-        .trim_matches('"')
-        .to_string()
-}
-
-enum ConditionTarget {
-    Generic(String),
-    Path(String),
-    File(String),
-    Directory(String),
-    Env(String),
-    Command(String),
-}
-
-fn resolve_condition_target(value: &str, ctx: &ExpressionContext<'_>) -> ConditionTarget {
-    let value = trim_literal(value);
-    if let Some((kind, target)) = value.split_once(':') {
-        let target = resolve_expr_value(target, ctx).unwrap_or_default();
-        match kind {
-            "env" => return ConditionTarget::Env(target),
-            "path" => return ConditionTarget::Path(target),
-            "file" => return ConditionTarget::File(target),
-            "dir" | "directory" => return ConditionTarget::Directory(target),
-            "cmd" | "command" | "exe" | "executable" => {
-                return ConditionTarget::Command(target);
-            }
-            _ => {}
-        }
-    }
-    ConditionTarget::Generic(resolve_expr_value(&value, ctx).unwrap_or_default())
-}
-
-fn function_arg<'a>(expr: &'a str, name: &str) -> Option<&'a str> {
-    expr.strip_prefix(name)
-        .and_then(|value| value.strip_prefix('('))
-        .and_then(|value| value.strip_suffix(')'))
-        .map(str::trim)
-}
-
-fn condition_target_exists(
-    target: &ConditionTarget,
-    ctx: &ExpressionContext<'_>,
-    command_probe: Option<&ConditionCommandProbe<'_>>,
-) -> Result<bool> {
-    match target {
-        ConditionTarget::Generic(value) => target_exists(value, ctx.root, command_probe),
-        ConditionTarget::Path(value) => Ok(path_target_exists(value, ctx.root)),
-        ConditionTarget::File(value) => Ok(file_target_exists(value, ctx.root)),
-        ConditionTarget::Directory(value) => Ok(directory_target_exists(value, ctx.root)),
-        ConditionTarget::Env(name) => Ok(env_target_exists(name, ctx.env)),
-        ConditionTarget::Command(value) => command_target_exists(value, ctx.root, command_probe),
-    }
-}
-
-fn executable_exists(name: &str) -> bool {
-    if name.is_empty() {
-        return false;
-    }
-
-    let path = Path::new(name);
-    if path.components().count() > 1 {
-        return executable_file_exists(path);
-    }
-
-    env::var_os("PATH")
-        .map(|value| env::split_paths(&value).any(|dir| executable_file_exists(&dir.join(name))))
-        .unwrap_or(false)
-}
-
-fn target_exists(
-    name: &str,
-    root: &Path,
-    command_probe: Option<&ConditionCommandProbe<'_>>,
-) -> Result<bool> {
-    if name.is_empty() {
-        return Ok(false);
-    }
-
-    let candidate = Path::new(name);
-    if candidate.is_absolute() {
-        return Ok(filesystem_entry_exists(candidate));
-    }
-    if candidate.components().count() > 1 || name.starts_with('.') {
-        return Ok(filesystem_entry_exists(&root.join(candidate)));
-    }
-
-    if filesystem_entry_exists(&root.join(candidate)) {
-        return Ok(true);
-    }
-
-    if let Some(command_probe) = command_probe {
-        return command_probe(name);
-    }
-
-    Ok(executable_exists(name))
-}
-
-fn command_target_exists(
-    name: &str,
-    root: &Path,
-    command_probe: Option<&ConditionCommandProbe<'_>>,
-) -> Result<bool> {
-    if name.is_empty() {
-        return Ok(false);
-    }
-
-    let candidate = Path::new(name);
-    if candidate.is_absolute() {
-        return Ok(executable_file_exists(candidate));
-    }
-    if candidate.components().count() > 1 || name.starts_with('.') {
-        return Ok(executable_file_exists(&root.join(candidate)));
-    }
-
-    if let Some(command_probe) = command_probe {
-        return command_probe(name);
-    }
-
-    Ok(executable_exists(name))
-}
-
-fn path_target_exists(name: &str, root: &Path) -> bool {
-    if name.is_empty() {
-        return false;
-    }
-
-    let candidate = Path::new(name);
-    if candidate.is_absolute() {
-        filesystem_entry_exists(candidate)
-    } else {
-        filesystem_entry_exists(&root.join(candidate))
-    }
-}
-
-fn file_target_exists(name: &str, root: &Path) -> bool {
-    path_target_has_kind(name, root, |path| {
-        fs::metadata(path)
-            .map(|meta| meta.is_file())
-            .unwrap_or(false)
-    })
-}
-
-fn directory_target_exists(name: &str, root: &Path) -> bool {
-    path_target_has_kind(name, root, |path| {
-        fs::metadata(path)
-            .map(|meta| meta.is_dir())
-            .unwrap_or(false)
-    })
-}
-
-fn path_target_has_kind(name: &str, root: &Path, predicate: impl FnOnce(&Path) -> bool) -> bool {
-    if name.is_empty() {
-        return false;
-    }
-
-    let candidate = Path::new(name);
-    if candidate.is_absolute() {
-        predicate(candidate)
-    } else {
-        predicate(&root.join(candidate))
-    }
-}
-
-fn env_target_exists(name: &str, env: &BTreeMap<String, String>) -> bool {
-    if name.is_empty() {
-        return false;
-    }
-
-    env.get(name)
-        .map(|value| !value.is_empty())
-        .or_else(|| std::env::var_os(name).map(|value| !value.is_empty()))
-        .unwrap_or(false)
-}
-
-fn filesystem_entry_exists(path: &Path) -> bool {
-    fs::symlink_metadata(path).is_ok()
-}
-
-fn executable_file_exists(path: &Path) -> bool {
-    fs::metadata(path)
-        .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
 }
 
 fn strip_action_ref(value: &str) -> &str {
@@ -3649,15 +2723,16 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use crate::config::{Architecture, ContainerType};
+    use crate::config::Architecture;
     use crate::git::CleanIgnoredMode;
-    use crate::workflow::WorkflowSource;
 
-    use super::{
-        evaluate_condition, evaluate_condition_with_probe, executable_exists,
-        generated_default_workflows, generated_native_container_image_name,
-        generated_native_containerfile, normalized_rust_components, parse_cleanup_ignored_mode,
-        parse_path_list, run_export_step, run_link_step, ExpressionContext,
+    use super::{parse_cleanup_ignored_mode, parse_path_list, run_export_step, run_link_step};
+    use crate::conditions::{
+        evaluate_condition, evaluate_condition_with_probe, executable_exists, ExpressionContext,
+    };
+    use crate::containers::{
+        generated_native_container_image_name, generated_native_containerfile,
+        normalized_rust_components,
     };
 
     fn expr_ctx<'a>(
@@ -3709,96 +2784,6 @@ mod tests {
             None,
             &expr_ctx(temp.path(), &env, false, true)
         ));
-    }
-
-    #[test]
-    fn generated_default_rust_build_uses_container_when_cargo_is_missing() {
-        let temp = TempDir::new().expect("tempdir");
-        fs::write(
-            temp.path().join("Cargo.toml"),
-            "[package]\nname = \"demo\"\n",
-        )
-        .expect("cargo");
-        let ci_dir = temp.path().join(".ci");
-
-        let workflows = generated_default_workflows(temp.path(), &ci_dir, None, &|_| false);
-
-        assert_eq!(workflows.len(), 1);
-        assert_eq!(workflows[0].name, "build");
-        match &workflows[0].source {
-            WorkflowSource::NativeYaml(native) => {
-                assert_eq!(
-                    native.metadata.on.to_vec(),
-                    vec!["manual".to_string(), "pre-push".to_string()]
-                );
-                assert_eq!(native.metadata.container.kind, Some(ContainerType::Rust));
-                assert_eq!(native.steps.len(), 1);
-                assert_eq!(native.steps[0].run.as_deref(), Some("cargo build"));
-            }
-            _ => panic!("expected native workflow"),
-        }
-    }
-
-    #[test]
-    fn generated_default_rust_build_uses_host_when_cargo_is_available() {
-        let temp = TempDir::new().expect("tempdir");
-        fs::write(
-            temp.path().join("Cargo.toml"),
-            "[package]\nname = \"demo\"\n",
-        )
-        .expect("cargo");
-
-        let workflows =
-            generated_default_workflows(temp.path(), &temp.path().join(".ci"), None, &|_| true);
-
-        match &workflows[0].source {
-            WorkflowSource::NativeYaml(native) => {
-                assert_eq!(native.metadata.container.kind, None);
-            }
-            _ => panic!("expected native workflow"),
-        }
-    }
-
-    #[test]
-    fn generated_default_node_build_uses_node_stack() {
-        let temp = TempDir::new().expect("tempdir");
-        fs::write(temp.path().join("package.json"), "{\"scripts\":{}}").expect("package");
-
-        let workflows =
-            generated_default_workflows(temp.path(), &temp.path().join(".ci"), None, &|tool| {
-                tool != "npm"
-            });
-
-        match &workflows[0].source {
-            WorkflowSource::NativeYaml(native) => {
-                assert_eq!(native.metadata.container.kind, Some(ContainerType::Node));
-                assert_eq!(
-                    native.steps[0].run.as_deref(),
-                    Some("npm install && npm run build --if-present")
-                );
-            }
-            _ => panic!("expected native workflow"),
-        }
-    }
-
-    #[test]
-    fn generated_default_build_honors_requested_stack() {
-        let temp = TempDir::new().expect("tempdir");
-
-        let workflows = generated_default_workflows(
-            temp.path(),
-            &temp.path().join(".ci"),
-            Some(ContainerType::Go),
-            &|_| false,
-        );
-
-        match &workflows[0].source {
-            WorkflowSource::NativeYaml(native) => {
-                assert_eq!(native.metadata.container.kind, Some(ContainerType::Go));
-                assert_eq!(native.steps[0].run.as_deref(), Some("go build ./..."));
-            }
-            _ => panic!("expected native workflow"),
-        }
     }
 
     #[test]

@@ -1,17 +1,21 @@
-use std::fs::OpenOptions;
+use std::collections::BTreeMap;
+use std::fs::{self, OpenOptions};
+use std::path::Path;
 
 use fs2::FileExt;
 
 use crate::artifacts::load_manifests;
 use crate::cli::{ExplainArgs, StatusArgs};
-use crate::config::format_arches;
+use crate::conditions::{evaluate_condition, interpolate_expressions, ExpressionContext};
+use crate::config::{format_arches, Architecture};
+use crate::containers::container_platform;
 use crate::git::{command_exists, preferred_container_runtime};
 use crate::install::{inspect_installation, BinaryState};
-use crate::runner::AppContext;
-use crate::workflow::{self, provider_name, WorkflowSource};
+use crate::runner::{available_workflows, AppContext};
+use crate::workflow::{self, provider_name, select_workflows, WorkflowSource};
 
 pub fn cmd_status(ctx: &AppContext, _args: &StatusArgs) -> crate::error::Result<i32> {
-    let workflows = workflow::discover_all(&ctx.repo)?;
+    let workflows = available_workflows(ctx)?;
     let install = inspect_installation(&ctx.repo, &ctx.config.defaults.arch);
     let manifests = load_manifests(&ctx.repo.runs_dir)?;
     let lock_path = ctx.repo.state_dir.join("lock");
@@ -106,6 +110,17 @@ pub fn cmd_status(ctx: &AppContext, _args: &StatusArgs) -> crate::error::Result<
         },
         preferred_container_runtime()
     );
+    for arch in &ctx.config.defaults.arch {
+        if arch == &Architecture::host() {
+            println!("OK   container arch {arch}: host architecture");
+        } else if binfmt_available(arch) {
+            println!("OK   container arch {arch}: binfmt handler found");
+        } else {
+            println!(
+                "WARN container arch {arch}: non-host architecture may need binfmt/qemu support"
+            );
+        }
+    }
     println!(
         "{}   host git {}",
         if command_exists("git") { "OK" } else { "WARN" },
@@ -152,14 +167,133 @@ pub fn cmd_status(ctx: &AppContext, _args: &StatusArgs) -> crate::error::Result<
 }
 
 pub fn cmd_explain(ctx: &AppContext, args: &ExplainArgs) -> crate::error::Result<i32> {
-    let workflows = workflow::discover_all(&ctx.repo)?;
-    for line in workflow::explain_subject(
+    let workflows = available_workflows(ctx)?;
+    let matches = select_workflows(
         &workflows,
         &ctx.config,
-        &args.subject,
+        Some(&args.subject),
+        "manual",
         ctx.repo.branch.as_deref(),
-    ) {
-        println!("{line}");
+        false,
+    );
+    if matches.is_empty() {
+        for line in workflow::explain_subject(
+            &workflows,
+            &ctx.config,
+            &args.subject,
+            ctx.repo.branch.as_deref(),
+        ) {
+            println!("{line}");
+        }
+        return Ok(0);
+    }
+
+    println!("Precedence: CLI flags > workflow fields > workflow defaults > config > auto-detect");
+    for item in matches {
+        let container_arches = item.resolved.container.arch.to_vec();
+        let arches = if !ctx.global.arch.is_empty() || container_arches.is_empty() {
+            ctx.config.defaults.arch.clone()
+        } else {
+            container_arches
+        };
+        println!(
+            "{} [{}] at {}",
+            item.workflow.name,
+            provider_name(&item.workflow.provider),
+            item.workflow.path.display()
+        );
+        println!("  selected because: {}", item.reasons.join("; "));
+        println!("  arches: {}", format_arches(&arches));
+        if let Some(kind) = item.resolved.container.kind {
+            println!("  container type: {}", kind.as_name());
+        }
+        if let Some(image) = &item.resolved.container.image {
+            println!("  container image: {image}");
+        }
+        for arch in &arches {
+            println!(
+                "  platform({arch}): {}",
+                container_platform(&item.resolved, arch)
+            );
+        }
+        explain_native_steps(ctx, &item.resolved, &item.workflow.source, &arches);
     }
     Ok(0)
+}
+
+fn explain_native_steps(
+    ctx: &AppContext,
+    resolved: &crate::workflow::ResolvedWorkflow,
+    source: &WorkflowSource,
+    arches: &[Architecture],
+) {
+    let WorkflowSource::NativeYaml(native) = source else {
+        return;
+    };
+    let empty = BTreeMap::new();
+    for arch in arches {
+        let mut env = BTreeMap::new();
+        env.insert("CI".to_string(), "true".to_string());
+        env.insert("CI_EVENT".to_string(), "manual".to_string());
+        env.insert("CI_ARCH".to_string(), arch.to_string());
+        env.insert("CI_HOST_ARCH".to_string(), Architecture::host().to_string());
+        env.insert("CI_REPO".to_string(), ctx.repo.root.display().to_string());
+        if let Some(branch) = ctx.repo.branch.as_ref() {
+            env.insert("CI_BRANCH".to_string(), branch.clone());
+        }
+        for (key, value) in &resolved.env {
+            env.insert(key.clone(), value.clone());
+        }
+        for (key, value) in &resolved.container.env {
+            env.insert(key.clone(), value.clone());
+        }
+        let mut previous_failed = false;
+        let mut success = true;
+        println!("  steps({arch}):");
+        for step in &native.steps {
+            let mut inputs = step.extra.clone();
+            inputs.extend(step.with.clone());
+            let expr = ExpressionContext {
+                event: "manual",
+                branch: ctx.repo.branch.as_deref(),
+                root: &ctx.repo.root,
+                env: &env,
+                matrix: &empty,
+                inputs: &inputs,
+                success,
+                previous_failed,
+            };
+            let name = step
+                .name
+                .as_deref()
+                .or(step.uses.as_deref())
+                .unwrap_or("run");
+            let should_run = evaluate_condition(step.if_condition.as_deref(), &expr);
+            if should_run {
+                println!("    OK   {name}");
+            } else {
+                println!(
+                    "    SKIP {name}: if `{}` is false",
+                    step.if_condition.as_deref().unwrap_or("success()")
+                );
+            }
+            if let Some(run) = step.run.as_deref() {
+                println!("         run: {}", interpolate_expressions(run, &expr));
+            }
+            previous_failed = false;
+            success = true;
+        }
+    }
+}
+
+fn binfmt_available(arch: &Architecture) -> bool {
+    let handler = match arch.as_str() {
+        "arm64" => "qemu-aarch64",
+        "x64" => "qemu-x86_64",
+        other => other,
+    };
+    let path = Path::new("/proc/sys/fs/binfmt_misc").join(handler);
+    fs::read_to_string(path)
+        .map(|value| value.contains("enabled"))
+        .unwrap_or(false)
 }

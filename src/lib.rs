@@ -3,7 +3,10 @@
 pub mod actions;
 pub mod artifacts;
 pub mod cli;
+pub mod conditions;
 pub mod config;
+pub mod containers;
+pub mod defaults;
 pub mod docs;
 pub mod error;
 pub mod git;
@@ -11,6 +14,7 @@ pub mod install;
 pub mod output;
 pub mod repo;
 pub mod runner;
+pub mod schema;
 pub mod status;
 pub mod workflow;
 
@@ -41,6 +45,7 @@ fn run(cli: Cli, doctor_alias: bool, bootstrap_output: Output) -> Result<i32> {
     match &cli.command {
         Commands::Completion(args) => return docs::cmd_completion(args),
         Commands::Man(args) => return docs::cmd_man(args),
+        Commands::Schema(args) => return schema::cmd_schema(args),
         _ => {}
     }
 
@@ -69,6 +74,7 @@ fn run(cli: Cli, doctor_alias: bool, bootstrap_output: Output) -> Result<i32> {
         Commands::Hook(args) => runner::cmd_hook(&ctx, &args),
         Commands::Status(args) => status::cmd_status(&ctx, &args),
         Commands::Explain(args) => status::cmd_explain(&ctx, &args),
+        Commands::Schema(_) => unreachable!(),
         Commands::Clean(args) => artifacts::cmd_clean(&ctx, &args),
         Commands::Completion(_) | Commands::Man(_) => unreachable!(),
         Commands::Init(args) => runner::cmd_init(&ctx, &args),

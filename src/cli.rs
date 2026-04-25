@@ -26,10 +26,19 @@ pub struct GlobalOptions {
     #[arg(short = 'v', long = "verbose", action = ArgAction::Count, global = true)]
     pub verbose: u8,
 
-    #[arg(short = 'q', long = "quiet", global = true)]
+    #[arg(
+        short = 'q',
+        long = "quiet",
+        global = true,
+        help = "Reduce normal output"
+    )]
     pub quiet: bool,
 
-    #[arg(long = "silent", global = true)]
+    #[arg(
+        long = "silent",
+        global = true,
+        help = "Alias for --quiet, useful for hooks and timers"
+    )]
     pub silent: bool,
 
     #[arg(long = "repo", global = true, default_value = ".")]
@@ -95,6 +104,7 @@ pub enum Commands {
     #[command(alias = "doctor")]
     Status(StatusArgs),
     Explain(ExplainArgs),
+    Schema(SchemaArgs),
     Clean(CleanArgs),
     Completion(CompletionArgs),
     Man(ManArgs),
@@ -229,6 +239,12 @@ pub struct ExplainArgs {
 }
 
 #[derive(Clone, Debug, Args)]
+pub struct SchemaArgs {
+    #[arg(value_name = "config|workflow|all")]
+    pub subject: Option<String>,
+}
+
+#[derive(Clone, Debug, Args)]
 pub struct CleanArgs {
     pub workflow: Option<String>,
 
@@ -342,6 +358,7 @@ fn is_known_command(command: &OsStr) -> bool {
                 | "doctor"
                 | "status"
                 | "explain"
+                | "schema"
                 | "clean"
                 | "completion"
                 | "man"
