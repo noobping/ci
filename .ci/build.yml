@@ -1,42 +1,44 @@
 on:
   - manual
   - pre-push
-container:
-  arch:
-    - x64
-    - arm64
+
 steps:
   - name: format
+    if: exists(cargo)
     run: cargo fmt --check
+  - name: format
+    if: missing(cargo)
+    run: toolbox run cargo fmt --check
 
   - name: lint
-    run: cargo clippy --target-dir target/$CI_ARCH --all-targets -- -D warnings
+    if: exists(cargo)
+    run: cargo clippy --all-targets -- -D warnings
+  - name: 
+    if: missing(cargo)
+    run: toolbox run cargo clippy --all-targets -- -D warnings
 
   - name: test
-    run: cargo test --target-dir target/$CI_ARCH --all
+    if: exists(cargo)
+    run: cargo test --all
+  - name: 
+    if: missing(cargo)
+    run: toolbox run cargo test --all
 
   - name: build
-    run: cargo build --target-dir target/$CI_ARCH --release
+    if: exists(cargo)
+    run: cargo build --release
+  - name: 
+    if: missing(cargo)
+    run: toolbox run cargo build --release
 
   - name: install executable
     if: exists(src)
     use: export
-    src: target/${{ env.CI_ARCH }}/release/ci
-    dest: ~/.local/bin/ci-${{ env.CI_ARCH }}
+    src: target/release/ci
+    dest: ~/.local/bin/
     replace: true
 
-  - name: generate bash completion
-    run: target/$CI_ARCH/release/ci completion bash --output target/$CI_ARCH/generated/completions/ci
   - name: install bash completion
-    use: export
-    src: target/${{ env.CI_ARCH }}/generated/completions/ci
-    dest: ~/.local/share/bash-completion/completions/ci
-    replace: true
-
-  - name: generate manual
-    run: target/$CI_ARCH/release/ci man --dir target/$CI_ARCH/generated/man/man1
+    run: ci completion bash > ~/.local/share/bash-completion/completions/ci
   - name: install manual
-    use: export
-    src: target/${{ env.CI_ARCH }}/generated/man/man1/*
-    dest: ~/.local/share/man/man1/
-    replace: true
+    run: ci man --dir ~/.local/share/man/man1

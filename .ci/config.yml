@@ -1,0 +1,7 @@
+container:
+  arch:
+    - x64
+    - arm64
+  components:
+    - cargo-fmt
+    - cargo-clippy
