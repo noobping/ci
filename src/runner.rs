@@ -17,7 +17,9 @@ use crate::actions::{
 };
 use crate::artifacts::ArtifactSession;
 use crate::cli::{GlobalOptions, HookArgs, InitArgs, ListArgs, RunArgs, SelfArgs};
-use crate::config::{Architecture, ContainerRuntime, ContainerType, ResolvedConfig};
+use crate::config::{
+    Architecture, ContainerRuntime, ContainerType, EventFilter, ResolvedConfig, WorkflowOverride,
+};
 use crate::error::{CiError, Result};
 use crate::git::{
     command_exists, preferred_container_runtime, sanitize_component, CleanIgnoredMode, GitService,
@@ -25,8 +27,8 @@ use crate::git::{
 use crate::output::Output;
 use crate::repo::RepoInfo;
 use crate::workflow::{
-    self, canonical_events, kind_name, provider_name, select_workflows, NativeStep,
-    ResolvedWorkflow, WorkflowMatch, WorkflowSource,
+    self, canonical_events, kind_name, provider_name, select_workflows, NativeStep, NativeWorkflow,
+    ResolvedWorkflow, Workflow, WorkflowKind, WorkflowMatch, WorkflowProvider, WorkflowSource,
 };
 
 const DEFAULT_RUST_WORKFLOW: &str = r#"name: build
@@ -230,7 +232,7 @@ const SYNC_ACTION_NAMES: &[&str] = &["sync", "ci/sync"];
 
 pub fn cmd_list(ctx: &AppContext, args: &ListArgs) -> Result<i32> {
     let porcelain = args.use_porcelain(std::io::stdout().is_terminal());
-    let workflows = workflow::discover_all(&ctx.repo)?;
+    let workflows = available_workflows(ctx)?;
     if workflows.is_empty() {
         if !porcelain {
             ctx.output.info(format!(
@@ -363,7 +365,7 @@ fn execute_run(ctx: &AppContext, request: RunRequest) -> Result<i32> {
         ctx.git.ensure_submodules(&ctx.repo)?;
     }
 
-    let workflows = workflow::discover_all(&ctx.repo)?;
+    let workflows = available_workflows(ctx)?;
     let matches = select_workflows(
         &workflows,
         &ctx.config,
@@ -437,6 +439,65 @@ fn execute_run(ctx: &AppContext, request: RunRequest) -> Result<i32> {
 
     artifacts.finish()?;
     Ok(last_failure)
+}
+
+fn available_workflows(ctx: &AppContext) -> Result<Vec<Workflow>> {
+    let workflows = workflow::discover_all(&ctx.repo)?;
+    if workflows.is_empty() {
+        Ok(generated_default_workflows(
+            &ctx.repo.root,
+            &ctx.repo.ci_dir,
+            command_exists("cargo"),
+        ))
+    } else {
+        Ok(workflows)
+    }
+}
+
+fn generated_default_workflows(
+    repo_root: &Path,
+    ci_dir: &Path,
+    host_cargo_available: bool,
+) -> Vec<Workflow> {
+    if repo_root.join("Cargo.toml").exists() {
+        return vec![generated_rust_build_workflow(ci_dir, host_cargo_available)];
+    }
+
+    Vec::new()
+}
+
+fn generated_rust_build_workflow(ci_dir: &Path, host_cargo_available: bool) -> Workflow {
+    let mut metadata = WorkflowOverride {
+        on: EventFilter::Many(vec!["manual".to_string(), "pre-push".to_string()]),
+        ..WorkflowOverride::default()
+    };
+    if !host_cargo_available {
+        metadata.container.kind = Some(ContainerType::Rust);
+    }
+
+    Workflow {
+        name: "build".to_string(),
+        path: ci_dir.join("build.yml"),
+        kind: WorkflowKind::NativeYaml,
+        provider: WorkflowProvider::Native,
+        source: WorkflowSource::NativeYaml(NativeWorkflow {
+            metadata,
+            steps: vec![NativeStep {
+                name: Some("build".to_string()),
+                run: Some("cargo build".to_string()),
+                uses: None,
+                container: None,
+                with: BTreeMap::new(),
+                extra: BTreeMap::new(),
+                shell: None,
+                env: BTreeMap::new(),
+                if_condition: None,
+                working_directory: None,
+                continue_on_error: false,
+                timeout_minutes: None,
+            }],
+        }),
+    }
 }
 
 fn workflow_execution_arches(
@@ -3182,13 +3243,15 @@ mod tests {
 
     use tempfile::TempDir;
 
+    use crate::config::ContainerType;
     use crate::git::CleanIgnoredMode;
+    use crate::workflow::WorkflowSource;
 
     use super::{
         evaluate_condition, evaluate_condition_with_probe, executable_exists,
-        generated_native_container_image_name, generated_native_containerfile,
-        normalized_rust_components, parse_cleanup_ignored_mode, parse_path_list, run_export_step,
-        ExpressionContext,
+        generated_default_workflows, generated_native_container_image_name,
+        generated_native_containerfile, normalized_rust_components, parse_cleanup_ignored_mode,
+        parse_path_list, run_export_step, ExpressionContext,
     };
 
     fn expr_ctx<'a>(
@@ -3240,6 +3303,53 @@ mod tests {
             None,
             &expr_ctx(temp.path(), &env, false, true)
         ));
+    }
+
+    #[test]
+    fn generated_default_rust_build_uses_container_when_cargo_is_missing() {
+        let temp = TempDir::new().expect("tempdir");
+        fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"demo\"\n",
+        )
+        .expect("cargo");
+        let ci_dir = temp.path().join(".ci");
+
+        let workflows = generated_default_workflows(temp.path(), &ci_dir, false);
+
+        assert_eq!(workflows.len(), 1);
+        assert_eq!(workflows[0].name, "build");
+        match &workflows[0].source {
+            WorkflowSource::NativeYaml(native) => {
+                assert_eq!(
+                    native.metadata.on.to_vec(),
+                    vec!["manual".to_string(), "pre-push".to_string()]
+                );
+                assert_eq!(native.metadata.container.kind, Some(ContainerType::Rust));
+                assert_eq!(native.steps.len(), 1);
+                assert_eq!(native.steps[0].run.as_deref(), Some("cargo build"));
+            }
+            _ => panic!("expected native workflow"),
+        }
+    }
+
+    #[test]
+    fn generated_default_rust_build_uses_host_when_cargo_is_available() {
+        let temp = TempDir::new().expect("tempdir");
+        fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"demo\"\n",
+        )
+        .expect("cargo");
+
+        let workflows = generated_default_workflows(temp.path(), &temp.path().join(".ci"), true);
+
+        match &workflows[0].source {
+            WorkflowSource::NativeYaml(native) => {
+                assert_eq!(native.metadata.container.kind, None);
+            }
+            _ => panic!("expected native workflow"),
+        }
     }
 
     #[test]

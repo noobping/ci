@@ -65,6 +65,8 @@ Use `--porcelain` to force that format on a terminal, or `--no-porcelain` to kee
 
 ## Workflow sources
 
+If a repository has no workflows, `ci` auto-detects a basic one. A Rust project with `Cargo.toml` gets a generated `build` workflow that runs `cargo build`; when host `cargo` is not available, that generated workflow uses the Rust container automatically.
+
 Executable scripts:
 
 ```sh
