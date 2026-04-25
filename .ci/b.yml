@@ -27,3 +27,6 @@ steps:
     src: target/release/ci
     dest: ~/.local/bin/
     replace: true
+
+  - run: ci completion bash > ~/.local/share/bash-completion/completions/ci
+  - run: ci man --dir ~/.local/share/man/man1
