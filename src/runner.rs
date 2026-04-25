@@ -667,6 +667,7 @@ fn native_container_enabled(resolved: &ResolvedWorkflow) -> bool {
         || resolved.container.platform.is_some()
         || !resolved.container.arch.is_empty()
         || !resolved.container.packages.is_empty()
+        || !resolved.container.components.is_empty()
 }
 
 fn prepare_native_container_image(
@@ -678,14 +679,23 @@ fn prepare_native_container_image(
 ) -> Result<PreparedNativeContainerImage> {
     let base_image = native_container_base_image(ctx, resolved, steps);
     validate_container_image_ref(&base_image)?;
-    if resolved.container.packages.is_empty() {
+    if resolved.container.packages.is_empty() && resolved.container.components.is_empty() {
         return Ok(PreparedNativeContainerImage {
             image: base_image,
             build_status: 0,
         });
     }
 
+    if !resolved.container.components.is_empty()
+        && native_container_effective_type(ctx, resolved, steps) == ContainerType::General
+    {
+        return Err(CiError::Usage(
+            "container.components is only supported for Rust containers".to_string(),
+        ));
+    }
+
     validate_container_packages(&resolved.container.packages)?;
+    let components = normalized_rust_components(&resolved.container.components)?;
     let tag = format!(
         "ci-{}-{}",
         sanitize_component(&resolved.name),
@@ -696,7 +706,7 @@ fn prepare_native_container_image(
     let file = dir.join(format!("{tag}.Containerfile"));
     fs::write(
         &file,
-        generated_native_containerfile(&base_image, &resolved.container.packages),
+        generated_native_containerfile(&base_image, &resolved.container.packages, &components),
     )?;
     let build_status = backend.build(&file, &dir, &tag, Some(platform))?;
     Ok(PreparedNativeContainerImage {
@@ -714,13 +724,27 @@ fn native_container_base_image(
         return image.clone();
     }
 
-    match resolved.container.kind.unwrap_or(ContainerType::Auto) {
+    match native_container_effective_type(ctx, resolved, steps) {
         ContainerType::Rust => "docker.io/library/rust:latest".to_string(),
         ContainerType::General => "docker.io/library/debian:stable-slim".to_string(),
-        ContainerType::Auto if native_workflow_looks_like_rust(ctx, steps) => {
-            "docker.io/library/rust:latest".to_string()
+        ContainerType::Auto => unreachable!("container type is resolved before selecting image"),
+    }
+}
+
+fn native_container_effective_type(
+    ctx: &AppContext,
+    resolved: &ResolvedWorkflow,
+    steps: &[NativeStep],
+) -> ContainerType {
+    match resolved.container.kind.unwrap_or(ContainerType::Auto) {
+        ContainerType::Auto
+            if !resolved.container.components.is_empty()
+                || native_workflow_looks_like_rust(ctx, steps) =>
+        {
+            ContainerType::Rust
         }
-        ContainerType::Auto => "docker.io/library/debian:stable-slim".to_string(),
+        ContainerType::Auto => ContainerType::General,
+        kind => kind,
     }
 }
 
@@ -732,6 +756,33 @@ fn native_workflow_looks_like_rust(ctx: &AppContext, steps: &[NativeStep]) -> bo
                 .map(|run| run.split_whitespace().any(|part| part == "cargo"))
                 .unwrap_or(false)
         })
+}
+
+fn normalized_rust_components(components: &[String]) -> Result<Vec<String>> {
+    let mut normalized = Vec::new();
+    for component in components {
+        let value = component.trim();
+        if value.is_empty() {
+            return Err(CiError::Usage(
+                "container component names must not be empty".to_string(),
+            ));
+        }
+        if value.contains('\0') || value.contains('\n') || value.contains('\r') {
+            return Err(CiError::Usage(format!(
+                "container component `{component}` contains unsupported control characters"
+            )));
+        }
+
+        let component = match value {
+            "cargo-fmt" => "rustfmt",
+            "cargo-clippy" => "clippy",
+            other => other,
+        };
+        if !normalized.iter().any(|item| item == component) {
+            normalized.push(component.to_string());
+        }
+    }
+    Ok(normalized)
 }
 
 fn validate_container_packages(packages: &[String]) -> Result<()> {
@@ -764,15 +815,33 @@ fn validate_container_image_ref(image: &str) -> Result<()> {
     Ok(())
 }
 
-fn generated_native_containerfile(base_image: &str, packages: &[String]) -> String {
+fn generated_native_containerfile(
+    base_image: &str,
+    packages: &[String],
+    components: &[String],
+) -> String {
+    let mut content = format!("FROM {base_image}\n");
+
+    if !components.is_empty() {
+        let components = components
+            .iter()
+            .map(|component| sh_single_quote(component))
+            .collect::<Vec<_>>()
+            .join(" ");
+        content.push_str(&format!("RUN rustup component add {components}\n"));
+    }
+
+    if packages.is_empty() {
+        return content;
+    }
+
     let packages = packages
         .iter()
         .map(|package| sh_single_quote(package))
         .collect::<Vec<_>>()
         .join(" ");
-    format!(
-        "FROM {base_image}\n\
-         RUN set -eux; \\\n\
+    content.push_str(&format!(
+        "RUN set -eux; \\\n\
              if command -v apt-get >/dev/null 2>&1; then \\\n\
                  apt-get update; \\\n\
                  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends {packages}; \\\n\
@@ -789,7 +858,8 @@ fn generated_native_containerfile(base_image: &str, packages: &[String]) -> Stri
                  echo 'no supported package manager found in container image' >&2; \\\n\
                  exit 1; \\\n\
              fi\n"
-    )
+    ));
+    content
 }
 
 fn sh_single_quote(value: &str) -> String {
@@ -2868,8 +2938,9 @@ mod tests {
     use crate::git::CleanIgnoredMode;
 
     use super::{
-        evaluate_condition, executable_exists, parse_cleanup_ignored_mode, parse_path_list,
-        run_export_step, ExpressionContext,
+        evaluate_condition, executable_exists, generated_native_containerfile,
+        normalized_rust_components, parse_cleanup_ignored_mode, parse_path_list, run_export_step,
+        ExpressionContext,
     };
 
     fn expr_ctx<'a>(
@@ -3026,6 +3097,38 @@ mod tests {
         assert_eq!(
             parse_path_list("- target/release/ci\n- dist/app.tar.gz"),
             vec!["target/release/ci", "dist/app.tar.gz"]
+        );
+    }
+
+    #[test]
+    fn rust_component_aliases_normalize_to_rustup_components() {
+        assert_eq!(
+            normalized_rust_components(&[
+                "cargo-fmt".to_string(),
+                "cargo-clippy".to_string(),
+                "rust-src".to_string(),
+                "rustfmt".to_string(),
+            ])
+            .expect("normalize components"),
+            vec!["rustfmt", "clippy", "rust-src"]
+        );
+    }
+
+    #[test]
+    fn generated_containerfile_installs_components_before_packages() {
+        let content = generated_native_containerfile(
+            "docker.io/library/rust:latest",
+            &["htop".to_string()],
+            &["rustfmt".to_string(), "clippy".to_string()],
+        );
+
+        assert!(content.contains("RUN rustup component add 'rustfmt' 'clippy'"));
+        assert!(content.contains("apt-get install -y --no-install-recommends 'htop'"));
+        assert!(
+            content
+                .find("rustup component add")
+                .expect("components line")
+                < content.find("apt-get install").expect("package line")
         );
     }
 

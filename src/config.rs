@@ -193,6 +193,8 @@ pub struct ContainerConfig {
     pub arch: ArchFilter,
     #[serde(default)]
     pub packages: Vec<String>,
+    #[serde(default)]
+    pub components: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -552,6 +554,11 @@ impl ContainerConfig {
             } else {
                 other.packages.clone()
             },
+            components: if other.components.is_empty() {
+                self.components.clone()
+            } else {
+                other.components.clone()
+            },
         }
     }
 }
@@ -609,7 +616,7 @@ defaults:
     }
 
     #[test]
-    fn container_config_accepts_type_arch_and_packages() {
+    fn container_config_accepts_type_arch_packages_and_components() {
         let file: ConfigFile = serde_yaml::from_str(
             r#"
 workflows:
@@ -621,6 +628,8 @@ workflows:
         - aarch64
       packages:
         - htop
+      components:
+        - cargo-fmt
 "#,
         )
         .expect("parse container config");
@@ -637,6 +646,7 @@ workflows:
             vec!["x64", "arm64"]
         );
         assert_eq!(container.packages, vec!["htop"]);
+        assert_eq!(container.components, vec!["cargo-fmt"]);
     }
 
     #[test]
