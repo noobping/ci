@@ -86,13 +86,11 @@ jobs:
             gh release edit continuous \
               --title "Continuous Release" \
               --notes "Latest build from main: $GITHUB_SHA" \
-              --prerelease \
-              --latest=false || \
+              --latest=true || \
             gh release create continuous \
               --title "Continuous Release" \
               --notes "Latest build from main: $GITHUB_SHA" \
-              --prerelease \
-              --latest=false
+              --latest=true
 
       - name: upload release assets
         env:
