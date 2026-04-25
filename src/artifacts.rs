@@ -331,7 +331,7 @@ pub fn load_manifests(dir: &Path) -> Result<Vec<RunManifest>> {
         }
         manifests.push(serde_json::from_slice(&fs::read(path)?)?);
     }
-    manifests.sort_by(|left, right| right.created_at_unix.cmp(&left.created_at_unix));
+    manifests.sort_by_key(|manifest| std::cmp::Reverse(manifest.created_at_unix));
     Ok(manifests)
 }
 

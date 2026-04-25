@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use clap::{ArgAction, Args, Parser, Subcommand};
 
-use crate::config::{ArtifactMode, ColorWhen, ContainerRuntime, GitMode};
+use crate::config::{Architecture, ArtifactMode, ColorWhen, ContainerRuntime, GitMode};
 use crate::workflow::is_known_hook;
 
 #[derive(Clone, Debug, Parser)]
@@ -47,6 +47,9 @@ pub struct GlobalOptions {
 
     #[arg(long = "git-image", global = true)]
     pub git_image: Option<String>,
+
+    #[arg(long = "arch", global = true)]
+    pub arch: Option<Architecture>,
 }
 
 #[derive(Clone, Debug, Subcommand)]
@@ -281,7 +284,8 @@ fn find_command_index(argv: &[OsString]) -> Option<usize> {
     while i < argv.len() {
         let current = argv[i].to_string_lossy();
         match current.as_ref() {
-            "--repo" | "--ci-dir" | "--config" | "--color" | "--git-mode" | "--git-image" => {
+            "--repo" | "--ci-dir" | "--config" | "--color" | "--git-mode" | "--git-image"
+            | "--arch" => {
                 i += 2;
             }
             value if value.starts_with('-') => {
@@ -404,6 +408,16 @@ mod tests {
 
         let status_alias = Cli::try_parse_from(rewrite(["ci", "doctor"])).expect("parse");
         assert!(matches!(status_alias.command, Commands::Status(_)));
+    }
+
+    #[test]
+    fn arch_flag_normalizes_aliases() {
+        let cli = Cli::try_parse_from(rewrite(["ci", "--arch", "amd64", "run"])).expect("parse");
+
+        assert_eq!(
+            cli.global.arch.as_ref().map(ToString::to_string).as_deref(),
+            Some("x64")
+        );
     }
 
     fn rewrite<const N: usize>(argv: [&str; N]) -> Vec<OsString> {

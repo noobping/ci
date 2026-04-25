@@ -11,7 +11,7 @@ use crate::workflow::{self, provider_name, WorkflowSource};
 
 pub fn cmd_status(ctx: &AppContext, _args: &StatusArgs) -> crate::error::Result<i32> {
     let workflows = workflow::discover_all(&ctx.repo)?;
-    let install = inspect_installation(&ctx.repo);
+    let install = inspect_installation(&ctx.repo, &ctx.config.defaults.arch);
     let manifests = load_manifests(&ctx.repo.runs_dir)?;
     let lock_path = ctx.repo.state_dir.join("lock");
 
@@ -20,6 +20,7 @@ pub fn cmd_status(ctx: &AppContext, _args: &StatusArgs) -> crate::error::Result<
     println!("CI dir:     {}", ctx.repo.ci_dir.display());
     println!("Bare repo:  {}", ctx.repo.is_bare);
     println!("Git mode:   {:?}", ctx.git.mode());
+    println!("Arch:       {}", ctx.config.defaults.arch);
     println!(
         "Config:     {}",
         if ctx.config.loaded {

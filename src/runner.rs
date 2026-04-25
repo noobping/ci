@@ -17,7 +17,7 @@ use crate::actions::{
 };
 use crate::artifacts::ArtifactSession;
 use crate::cli::{GlobalOptions, HookArgs, InitArgs, ListArgs, RunArgs, SelfArgs};
-use crate::config::{ContainerRuntime, ResolvedConfig};
+use crate::config::{Architecture, ContainerRuntime, ResolvedConfig};
 use crate::error::{CiError, Result};
 use crate::git::{
     command_exists, preferred_container_runtime, sanitize_component, CleanIgnoredMode, GitService,
@@ -85,6 +85,7 @@ struct RunInvocation {
     event: String,
     dry_run: bool,
     keep_going: bool,
+    arch: Architecture,
     container_runtime: ContainerRuntime,
     respect_branches: bool,
     recursive_checkout: bool,
@@ -125,6 +126,7 @@ struct ActionsJobExecution<'a> {
     workflow: &'a ActionsWorkflow,
     resolved: &'a ResolvedWorkflow,
     job: &'a ActionsJob,
+    arch: &'a Architecture,
     matrix: &'a BTreeMap<String, String>,
     base_env: &'a BTreeMap<String, String>,
     backend: Option<&'a ContainerBackend>,
@@ -227,6 +229,7 @@ pub fn cmd_run(ctx: &AppContext, args: &RunArgs) -> Result<i32> {
         event: args.event.clone(),
         dry_run: args.dry_run,
         keep_going,
+        arch: ctx.config.defaults.arch.clone(),
         container_runtime: args
             .container_runtime
             .unwrap_or(ctx.config.defaults.container_runtime),
@@ -251,6 +254,7 @@ pub fn cmd_hook(ctx: &AppContext, args: &HookArgs) -> Result<i32> {
         event: args.hook.clone(),
         dry_run: false,
         keep_going: !ctx.config.defaults.fail_fast,
+        arch: ctx.config.defaults.arch.clone(),
         container_runtime: ctx.config.defaults.container_runtime,
         respect_branches: true,
         recursive_checkout: ctx.config.defaults.recursive_checkout,
@@ -308,6 +312,7 @@ fn execute_run(ctx: &AppContext, invocation: RunInvocation) -> Result<i32> {
         &ctx.config,
         invocation.workflow.as_deref(),
         &invocation.event,
+        &invocation.arch,
         invocation.branch.as_deref(),
         invocation.respect_branches,
     );
@@ -604,12 +609,8 @@ fn run_container_workflow(
 ) -> Result<i32> {
     let backend = ContainerBackend::detect(invocation.container_runtime)?;
     let tag = format!("ci-{}", sanitize_component(&resolved.name));
-    let build_status = backend.build(
-        &resolved.path,
-        &ctx.repo.root,
-        &tag,
-        resolved.container.platform.as_deref(),
-    )?;
+    let platform = container_platform(resolved, &invocation.arch);
+    let build_status = backend.build(&resolved.path, &ctx.repo.root, &tag, Some(&platform))?;
     if build_status != 0 {
         return Ok(build_status);
     }
@@ -621,9 +622,17 @@ fn run_container_workflow(
         script: "true",
         env,
         workdir: &ctx.repo.root,
-        platform: resolved.container.platform.as_deref(),
+        platform: Some(&platform),
         options: None,
     })
+}
+
+fn container_platform(resolved: &ResolvedWorkflow, arch: &Architecture) -> String {
+    resolved
+        .container
+        .platform
+        .clone()
+        .unwrap_or_else(|| arch.platform())
 }
 
 fn run_actions_workflow(
@@ -668,6 +677,7 @@ fn run_actions_workflow(
             };
 
             let mut services = Vec::new();
+            let platform = container_platform(resolved, &invocation.arch);
             if let Some(backend) = &backend {
                 for (name, service) in &job.services {
                     let container_name = format!(
@@ -676,7 +686,7 @@ fn run_actions_workflow(
                         sanitize_component(&job.id),
                         sanitize_component(name)
                     );
-                    backend.start_service(&container_name, service)?;
+                    backend.start_service(&container_name, service, Some(&platform))?;
                     services.push(container_name);
                 }
             }
@@ -685,6 +695,7 @@ fn run_actions_workflow(
                 workflow,
                 resolved,
                 job: &job,
+                arch: &invocation.arch,
                 matrix: &matrix,
                 base_env,
                 backend: backend.as_ref(),
@@ -812,6 +823,7 @@ fn run_actions_run_step(
     );
 
     if let Some(container) = execution.job.container.as_ref() {
+        let platform = container_platform(execution.resolved, execution.arch);
         execution
             .backend
             .ok_or_else(|| CiError::Message("container runtime was not initialised".to_string()))?
@@ -822,7 +834,7 @@ fn run_actions_run_step(
                 script: &script,
                 env: &merged,
                 workdir: &workdir,
-                platform: execution.resolved.container.platform.as_deref(),
+                platform: Some(&platform),
                 options: container.options.as_deref(),
             })
     } else {
@@ -917,6 +929,7 @@ fn run_actions_uses_step(
 
     if step.uses.starts_with("docker://") {
         let image = step.uses.trim_start_matches("docker://");
+        let platform = container_platform(execution.resolved, execution.arch);
         return execution
             .backend
             .ok_or_else(|| {
@@ -929,21 +942,22 @@ fn run_actions_uses_step(
                 script: "true",
                 env: &merged,
                 workdir: &ctx.repo.root,
-                platform: None,
+                platform: Some(&platform),
                 options: None,
             });
     }
 
+    let platform = container_platform(execution.resolved, execution.arch);
     if step.uses.starts_with("./") {
         let dir = ctx.repo.root.join(step.uses.trim_start_matches("./"));
         return run_local_action(
             ctx,
-            execution.workflow,
             execution.matrix,
             &merged,
             execution.backend,
             &dir,
             &step.with,
+            &platform,
         );
     }
 
@@ -962,12 +976,12 @@ fn run_actions_uses_step(
     };
     run_local_action(
         ctx,
-        execution.workflow,
         execution.matrix,
         &merged,
         execution.backend,
         &dir,
         &step.with,
+        &platform,
     )
 }
 
@@ -1084,12 +1098,12 @@ fn run_builtin_step(
 
 fn run_local_action(
     ctx: &AppContext,
-    _workflow: &ActionsWorkflow,
     matrix: &BTreeMap<String, String>,
     base_env: &BTreeMap<String, String>,
     backend: Option<&ContainerBackend>,
     dir: &Path,
     inputs: &BTreeMap<String, String>,
+    platform: &str,
 ) -> Result<i32> {
     let meta = load_action_metadata(dir)?;
     match meta.runs {
@@ -1165,7 +1179,7 @@ fn run_local_action(
                             .unwrap_or("action")
                     )
                 );
-                let build_status = backend.build(&dockerfile, dir, &tag, None)?;
+                let build_status = backend.build(&dockerfile, dir, &tag, Some(platform))?;
                 if build_status != 0 {
                     return Ok(build_status);
                 }
@@ -1178,6 +1192,7 @@ fn run_local_action(
                 base_env,
                 entrypoint.as_deref(),
                 &args.unwrap_or_default(),
+                Some(platform),
             )
         }
         ActionRuns::Node { main } => {
@@ -1208,7 +1223,7 @@ fn run_local_action(
                     ),
                     env: base_env,
                     workdir: dir,
-                    platform: None,
+                    platform: Some(platform),
                     options: None,
                 })
             }
@@ -1725,6 +1740,8 @@ fn workflow_env(
     env.insert("CI_TOOL".to_string(), "ci".to_string());
     env.insert("CI_EVENT".to_string(), invocation.event.clone());
     env.insert("CI_HOOK".to_string(), invocation.event.clone());
+    env.insert("CI_ARCH".to_string(), invocation.arch.to_string());
+    env.insert("CI_PLATFORM".to_string(), invocation.arch.platform());
     env.insert("CI_REPO".to_string(), ctx.repo.root.display().to_string());
     env.insert(
         "CI_GIT_DIR".to_string(),
@@ -1990,6 +2007,7 @@ impl ContainerBackend {
         env: &BTreeMap<String, String>,
         entrypoint: Option<&str>,
         args: &[String],
+        platform: Option<&str>,
     ) -> Result<i32> {
         let mount = format!("{}:/action", action_dir.display());
         let mut command = Command::new(&self.runtime);
@@ -2002,6 +2020,9 @@ impl ContainerBackend {
             .arg(mount)
             .arg("-w")
             .arg("/action");
+        if let Some(platform) = platform {
+            command.arg("--platform").arg(platform);
+        }
         if let Some(entrypoint) = entrypoint {
             command.arg("--entrypoint").arg(entrypoint);
         }
@@ -2019,7 +2040,12 @@ impl ContainerBackend {
         Ok(command.status()?.code().unwrap_or(1))
     }
 
-    fn start_service(&self, name: &str, service: &ActionService) -> Result<()> {
+    fn start_service(
+        &self,
+        name: &str,
+        service: &ActionService,
+        platform: Option<&str>,
+    ) -> Result<()> {
         let mut command = Command::new(&self.runtime);
         command
             .arg("run")
@@ -2029,6 +2055,9 @@ impl ContainerBackend {
             .arg(name)
             .arg("--network")
             .arg("host");
+        if let Some(platform) = platform {
+            command.arg("--platform").arg(platform);
+        }
         if let Some(options) = service.options.as_deref() {
             for part in options.split_whitespace() {
                 command.arg(part);

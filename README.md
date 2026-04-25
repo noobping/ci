@@ -20,6 +20,7 @@ ci list --porcelain
 ci run
 ci run build
 ci build
+ci run --arch arm64 build
 ci run --event pre-push
 ci install --mode link --hooks pre-commit,pre-push
 ci status
@@ -77,6 +78,9 @@ name: build
 on:
   - manual
   - pre-push
+arch:
+  - x64
+  - arm64
 steps:
   - name: Checkout
     uses: checkout
@@ -186,14 +190,17 @@ Optional config lives in:
 .ci/config.yml
 ```
 
-Supported defaults include shell, silent output, fail-fast, container runtime, git mode/image, recursive checkout, default branch allowlist, artifact store, and actions cache.
+Supported defaults include shell, silent output, fail-fast, architecture, container runtime, git mode/image, recursive checkout, default branch allowlist, artifact store, and actions cache.
 
 Example:
 
 ```yaml
 defaults:
   silent: true
+  arch: x64
 ```
+
+Workflow `arch` filters accept aliases such as `amd64`, `x64`, `x86_64`, `arm64`, and `aarch64`. When a container workflow or action does not set `container.platform`, `ci` maps the selected arch to a podman/docker platform such as `linux/amd64` or `linux/arm64`.
 
 ## Actions compatibility
 
@@ -220,7 +227,7 @@ Built-in shims exist for:
 ci install --mode link
 ```
 
-Creates `.git/ci/run` as a symlink to the currently running `ci` binary.
+Creates an arch-specific symlink such as `.git/ci/run.x64` to the currently running `ci` binary. Managed hooks choose `.git/ci/run.x64`, `.git/ci/run.arm64`, or another matching runner from `uname -m`, with `.git/ci/run` kept as a legacy fallback.
 
 ### Copy mode
 
@@ -228,7 +235,7 @@ Creates `.git/ci/run` as a symlink to the currently running `ci` binary.
 ci install --mode copy
 ```
 
-Copies the currently running `ci` binary into `.git/ci/run`.
+Copies the currently running `ci` binary into an arch-specific path such as `.git/ci/run.x64`.
 
 ## Update
 

@@ -104,7 +104,7 @@ mod tests {
     use std::path::PathBuf;
 
     use crate::cli::GlobalOptions;
-    use crate::config::{ColorWhen, ContainerRuntime, Defaults, GitMode};
+    use crate::config::{Architecture, ColorWhen, ContainerRuntime, Defaults, GitMode};
 
     use super::{Output, Verbosity};
 
@@ -119,6 +119,7 @@ mod tests {
             color: ColorWhen::Never,
             git_mode: None,
             git_image: None,
+            arch: None,
         }
     }
 
@@ -162,6 +163,7 @@ mod tests {
             shell: "/bin/sh".to_string(),
             silent,
             fail_fast: true,
+            arch: Architecture::host(),
             container_runtime: ContainerRuntime::Auto,
             git_mode: GitMode::Auto,
             git_image: "docker.io/alpine/git:latest".to_string(),

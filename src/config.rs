@@ -2,9 +2,10 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use clap::ValueEnum;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::cli::GlobalOptions;
 use crate::error::Result;
@@ -12,6 +13,96 @@ use crate::repo::RepoInfo;
 
 const DEFAULT_BRANCHES: &[&str] = &["main", "master", "develop", "development"];
 const DEFAULT_GIT_IMAGE: &str = "docker.io/alpine/git:latest";
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct Architecture(String);
+
+impl Architecture {
+    pub fn host() -> Self {
+        Self::from_alias(std::env::consts::ARCH).unwrap_or_else(|| Self("x64".to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn runner_suffix(&self) -> String {
+        self.0
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                    ch
+                } else {
+                    '-'
+                }
+            })
+            .collect()
+    }
+
+    pub fn platform(&self) -> String {
+        match self.0.as_str() {
+            "x64" => "linux/amd64".to_string(),
+            "arm64" => "linux/arm64".to_string(),
+            value if value.starts_with("linux/") => value.to_string(),
+            value => format!("linux/{value}"),
+        }
+    }
+
+    fn from_alias(value: &str) -> Option<Self> {
+        let value = value.trim();
+        if value.is_empty() {
+            return None;
+        }
+
+        let value = value.to_ascii_lowercase().replace('-', "_");
+        let value = value.strip_prefix("linux/").unwrap_or(&value);
+        let canonical = match value {
+            "amd64" | "x64" | "x86_64" => "x64".to_string(),
+            "arm64" | "aarch64" => "arm64".to_string(),
+            other => other.replace('_', "-"),
+        };
+        Some(Self(canonical))
+    }
+}
+
+impl Default for Architecture {
+    fn default() -> Self {
+        Self::host()
+    }
+}
+
+impl fmt::Display for Architecture {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl FromStr for Architecture {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        Self::from_alias(value).ok_or_else(|| "architecture must not be empty".to_string())
+    }
+}
+
+impl Serialize for Architecture {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for Architecture {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::from_str(&value).map_err(serde::de::Error::custom)
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
@@ -100,6 +191,9 @@ pub struct WorkflowOverride {
     pub on: EventFilter,
 
     #[serde(default)]
+    pub arch: ArchFilter,
+
+    #[serde(default)]
     pub branches: BranchConfig,
 
     #[serde(default)]
@@ -120,6 +214,7 @@ pub struct DefaultsConfig {
     pub shell: Option<String>,
     pub silent: Option<bool>,
     pub fail_fast: Option<bool>,
+    pub arch: Option<Architecture>,
     pub container_runtime: Option<ContainerRuntime>,
     pub git_mode: Option<GitMode>,
     pub git_image: Option<String>,
@@ -172,11 +267,55 @@ impl EventFilter {
     }
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum ArchFilter {
+    #[default]
+    None,
+    Single(Architecture),
+    Many(Vec<Architecture>),
+}
+
+impl ArchFilter {
+    pub fn to_vec(&self) -> Vec<Architecture> {
+        match self {
+            Self::None => Vec::new(),
+            Self::Single(value) => vec![value.clone()],
+            Self::Many(values) => values.clone(),
+        }
+    }
+
+    pub fn merged(&self, other: &Self) -> Self {
+        match other {
+            Self::None => self.clone(),
+            _ => other.clone(),
+        }
+    }
+
+    pub fn allows(&self, arch: &Architecture) -> bool {
+        match self {
+            Self::None => true,
+            Self::Many(values) if values.is_empty() => true,
+            Self::Single(value) => value == arch,
+            Self::Many(values) => values.iter().any(|value| value == arch),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Self::None => true,
+            Self::Many(values) => values.is_empty(),
+            Self::Single(_) => false,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Defaults {
     pub shell: String,
     pub silent: bool,
     pub fail_fast: bool,
+    pub arch: Architecture,
     pub container_runtime: ContainerRuntime,
     pub git_mode: GitMode,
     pub git_image: String,
@@ -218,6 +357,11 @@ impl ResolvedConfig {
                 .unwrap_or_else(|| "/bin/sh".to_string()),
             silent: file.defaults.silent.unwrap_or(false),
             fail_fast: file.defaults.fail_fast.unwrap_or(true),
+            arch: global
+                .arch
+                .clone()
+                .or_else(|| file.defaults.arch.clone())
+                .unwrap_or_else(Architecture::host),
             container_runtime: file
                 .defaults
                 .container_runtime
@@ -285,6 +429,7 @@ impl WorkflowOverride {
 
         Self {
             on: self.on.merged(&other.on),
+            arch: self.arch.merged(&other.arch),
             branches: self.branches.merge(&other.branches),
             artifacts: self.artifacts.merge(&other.artifacts),
             execution: self.execution.merge(&other.execution),

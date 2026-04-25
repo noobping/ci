@@ -9,8 +9,8 @@ use walkdir::WalkDir;
 
 use crate::actions::{self, ActionsProvider, ActionsWorkflow};
 use crate::config::{
-    ArtifactConfig, BranchConfig, ContainerConfig, EventFilter, ExecutionConfig, ResolvedConfig,
-    WorkflowOverride,
+    ArchFilter, Architecture, ArtifactConfig, BranchConfig, ContainerConfig, EventFilter,
+    ExecutionConfig, ResolvedConfig, WorkflowOverride,
 };
 use crate::error::Result;
 use crate::repo::RepoInfo;
@@ -145,6 +145,7 @@ pub struct ResolvedWorkflow {
     pub provider: WorkflowProvider,
     pub source: WorkflowSource,
     pub events: Vec<String>,
+    pub arch: ArchFilter,
     pub branches: BranchConfig,
     pub artifacts: ArtifactConfig,
     pub execution: ExecutionConfig,
@@ -164,6 +165,8 @@ struct NativeWorkflowFile {
     name: Option<String>,
     #[serde(default, rename = "on")]
     on: EventFilter,
+    #[serde(default)]
+    arch: ArchFilter,
     #[serde(default)]
     branches: BranchConfig,
     #[serde(default)]
@@ -249,6 +252,7 @@ impl NativeWorkflowFile {
     fn metadata(&self) -> WorkflowOverride {
         WorkflowOverride {
             on: self.on.clone(),
+            arch: self.arch.clone(),
             branches: self.branches.clone(),
             artifacts: self.artifacts.clone(),
             execution: self.execution.clone(),
@@ -331,6 +335,7 @@ pub fn resolve_workflow(
         provider: workflow.provider.clone(),
         source: workflow.source.clone(),
         events: merged.on.to_vec(),
+        arch: merged.arch,
         branches: merged.branches,
         artifacts: merged.artifacts,
         execution: merged.execution,
@@ -344,6 +349,7 @@ pub fn select_workflows(
     config: &ResolvedConfig,
     requested_name: Option<&str>,
     event: &str,
+    arch: &Architecture,
     branch: Option<&str>,
     respect_branches: bool,
 ) -> Vec<WorkflowMatch> {
@@ -360,6 +366,9 @@ pub fn select_workflows(
                     return None;
                 }
                 if automation && !branch_allowed(config, &resolved.branches, branch) {
+                    return None;
+                }
+                if !arch_allowed(&resolved.arch, arch) {
                     return None;
                 }
                 return Some(WorkflowMatch {
@@ -407,6 +416,12 @@ pub fn select_workflows(
 
             if automation && !branch_allowed(config, &resolved.branches, branch) {
                 return None;
+            }
+            if !arch_allowed(&resolved.arch, arch) {
+                return None;
+            }
+            if !resolved.arch.is_empty() {
+                reasons.push(format!("workflow arch includes `{arch}`"));
             }
 
             Some(WorkflowMatch {
@@ -466,11 +481,26 @@ pub fn explain_subject(
             }
             let branches = resolved.branches.effective(&config.defaults);
             lines.push(format!("  branches: {:?}", branches));
+            let arch = resolved.arch.to_vec();
+            if !arch.is_empty() {
+                lines.push(format!(
+                    "  arch: {:?}",
+                    arch.iter().map(ToString::to_string).collect::<Vec<_>>()
+                ));
+            }
         }
         return lines;
     }
 
-    let matches = select_workflows(workflows, config, None, subject, branch, true);
+    let matches = select_workflows(
+        workflows,
+        config,
+        None,
+        subject,
+        &config.defaults.arch,
+        branch,
+        true,
+    );
     if matches.is_empty() {
         lines.push(format!("No workflows matched `{subject}`"));
         return lines;
@@ -514,6 +544,10 @@ fn branch_allowed(config: &ResolvedConfig, branches: &BranchConfig, branch: Opti
         Some(branch) => allowed.iter().any(|item| item == branch),
         None => true,
     }
+}
+
+fn arch_allowed(arch_filter: &ArchFilter, arch: &Architecture) -> bool {
+    arch_filter.allows(arch)
 }
 
 fn discover_native(repo: &RepoInfo, workflows: &mut Vec<Workflow>) -> Result<()> {
@@ -857,5 +891,27 @@ steps:
         assert!(err
             .to_string()
             .contains("must define only one of `use` or `uses`"));
+    }
+
+    #[test]
+    fn native_workflow_parses_arch_aliases() {
+        let file: NativeWorkflowFile = serde_yaml::from_str(
+            r#"
+arch:
+  - amd64
+  - aarch64
+steps:
+  - run: echo ok
+"#,
+        )
+        .expect("parse workflow");
+        let arch = file
+            .arch
+            .to_vec()
+            .into_iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(arch, vec!["x64", "arm64"]);
     }
 }

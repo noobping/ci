@@ -3,6 +3,7 @@ use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use crate::cli::{InstallArgs, InstallMode, UninstallArgs, UpdateArgs};
+use crate::config::Architecture;
 use crate::error::{CiError, Result};
 use crate::repo::RepoInfo;
 use crate::runner::AppContext;
@@ -43,7 +44,7 @@ pub struct HookState {
 pub fn cmd_install(ctx: &AppContext, args: &InstallArgs) -> Result<i32> {
     let hooks = parse_hooks(args.hooks.as_deref(), ctx.repo.is_bare)?;
     let ci_bin_dir = managed_runner_dir(&ctx.repo);
-    let ci_bin = managed_runner_path(&ctx.repo);
+    let ci_bin = managed_runner_path(&ctx.repo, &ctx.config.defaults.arch);
     let hooks_dir = ctx.repo.git_dir.join("hooks");
 
     ctx.output
@@ -78,13 +79,14 @@ pub fn cmd_install(ctx: &AppContext, args: &InstallArgs) -> Result<i32> {
 }
 
 pub fn cmd_update(ctx: &AppContext, args: &UpdateArgs) -> Result<i32> {
-    let ci_bin = managed_runner_path(&ctx.repo);
+    let ci_bin = managed_runner_path(&ctx.repo, &ctx.config.defaults.arch);
+    let legacy_ci_bin = legacy_managed_runner_path(&ctx.repo);
     let source = args
         .source
         .clone()
         .unwrap_or_else(|| ctx.repo.current_exe.clone());
 
-    if !path_exists_or_symlink(&ci_bin) {
+    if !path_exists_or_symlink(&ci_bin) && !path_exists_or_symlink(&legacy_ci_bin) {
         return Err(CiError::Message(format!(
             "ci does not look installed in {}; run `ci install` first",
             ctx.repo.git_dir.display()
@@ -162,12 +164,17 @@ pub fn cmd_uninstall(ctx: &AppContext, args: &UninstallArgs) -> Result<i32> {
     }
 
     if !args.keep_binary {
-        let ci_bin = managed_runner_path(&ctx.repo);
+        let ci_bin = managed_runner_path(&ctx.repo, &ctx.config.defaults.arch);
+        let legacy_ci_bin = legacy_managed_runner_path(&ctx.repo);
         let ci_dir = managed_runner_dir(&ctx.repo);
         if args.dry_run {
             println!("would remove binary {}", ci_bin.display());
+            if path_exists_or_symlink(&legacy_ci_bin) {
+                println!("would remove legacy binary {}", legacy_ci_bin.display());
+            }
         } else {
             remove_file_if_exists(&ci_bin)?;
+            remove_file_if_exists(&legacy_ci_bin)?;
             let _ = fs::remove_dir(&ci_dir);
         }
     }
@@ -176,8 +183,14 @@ pub fn cmd_uninstall(ctx: &AppContext, args: &UninstallArgs) -> Result<i32> {
     Ok(0)
 }
 
-pub fn inspect_installation(repo: &RepoInfo) -> InstallState {
-    let bin = managed_runner_path(repo);
+pub fn inspect_installation(repo: &RepoInfo, arch: &Architecture) -> InstallState {
+    let arch_bin = managed_runner_path(repo, arch);
+    let legacy_bin = legacy_managed_runner_path(repo);
+    let bin = if path_exists_or_symlink(&arch_bin) || !path_exists_or_symlink(&legacy_bin) {
+        arch_bin
+    } else {
+        legacy_bin
+    };
     let binary = if !bin.exists() && !is_symlink(&bin) {
         BinaryState::Missing(bin)
     } else if is_symlink(&bin) {
@@ -282,7 +295,20 @@ fn install_hook(hook_path: &Path, hook: &str, force: bool, backup_existing: bool
     }
 
     let script = format!(
-        "#!/usr/bin/env sh\n# {MANAGED_MARKER}\nexec \"$(dirname \"$0\")/../ci/{MANAGED_RUNNER_NAME}\" hook {hook} \"$@\"\n"
+        "#!/usr/bin/env sh\n\
+         # {MANAGED_MARKER}\n\
+         ci_machine=$(uname -m 2>/dev/null || printf unknown)\n\
+         case \"$ci_machine\" in\n\
+         \tx86_64|amd64) ci_arch=x64 ;;\n\
+         \taarch64|arm64) ci_arch=arm64 ;;\n\
+         \t*) ci_arch=$ci_machine ;;\n\
+         esac\n\
+         ci_dir=$(dirname \"$0\")/../ci\n\
+         ci_runner=\"$ci_dir/{MANAGED_RUNNER_NAME}.$ci_arch\"\n\
+         if [ ! -x \"$ci_runner\" ]; then\n\
+         \tci_runner=\"$ci_dir/{MANAGED_RUNNER_NAME}\"\n\
+         fi\n\
+         exec \"$ci_runner\" hook {hook} \"$@\"\n"
     );
     fs::write(hook_path, script)?;
     chmod_executable(hook_path)?;
@@ -293,7 +319,11 @@ fn managed_runner_dir(repo: &RepoInfo) -> PathBuf {
     repo.git_dir.join("ci")
 }
 
-fn managed_runner_path(repo: &RepoInfo) -> PathBuf {
+fn managed_runner_path(repo: &RepoInfo, arch: &Architecture) -> PathBuf {
+    managed_runner_dir(repo).join(format!("{MANAGED_RUNNER_NAME}.{}", arch.runner_suffix()))
+}
+
+fn legacy_managed_runner_path(repo: &RepoInfo) -> PathBuf {
     managed_runner_dir(repo).join(MANAGED_RUNNER_NAME)
 }
 
@@ -338,5 +368,24 @@ pub fn remove_file_if_exists(path: &Path) -> Result<()> {
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err.into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{install_hook, is_executable, is_managed_hook};
+
+    #[test]
+    fn managed_hook_dispatches_to_arch_runner_with_legacy_fallback() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let hook = temp.path().join("pre-push");
+
+        install_hook(&hook, "pre-push", false, false).expect("install hook");
+
+        let content = std::fs::read_to_string(&hook).expect("read hook");
+        assert!(content.contains("run.$ci_arch"));
+        assert!(content.contains("ci_runner=\"$ci_dir/run\""));
+        assert!(is_managed_hook(&hook));
+        assert!(is_executable(&hook));
     }
 }
