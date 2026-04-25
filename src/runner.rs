@@ -227,6 +227,7 @@ const EXPORT_ACTION_NAMES: &[&str] = &[
     "ci/install",
 ];
 
+const LINK_ACTION_NAMES: &[&str] = &["link", "ci/link", "symlink", "ci/symlink"];
 const COMMIT_ACTION_NAMES: &[&str] = &["commit", "ci/commit"];
 const SYNC_ACTION_NAMES: &[&str] = &["sync", "ci/sync"];
 
@@ -1533,6 +1534,11 @@ fn run_builtin_step(
                 .verbose(format!("running built-in action `{}`", invocation.uses));
             Ok(Some(run_export_step(invocation.expr.root, &rendered_with)?))
         }
+        name if LINK_ACTION_NAMES.contains(&name) => {
+            ctx.output
+                .verbose(format!("running built-in action `{}`", invocation.uses));
+            Ok(Some(run_link_step(invocation.expr.root, &rendered_with)?))
+        }
         name if COMMIT_ACTION_NAMES.contains(&name) => {
             ctx.output
                 .verbose(format!("running built-in action `{}`", invocation.uses));
@@ -1838,11 +1844,40 @@ fn run_export_step(root: &Path, rendered_with: &BTreeMap<String, String>) -> Res
     }
 
     let replace = input_bool(rendered_with, &["replace", "overwrite"], false);
-    let sources = expand_export_sources(root, &specs)?;
+    let sources = expand_action_sources(root, &specs, "export")?;
     let destination_path = resolve_export_path(root, destination);
     for source in &sources {
         let target = export_target_path(source, &destination_path, destination, sources.len())?;
         copy_export_path(source, &target, replace)?;
+    }
+    Ok(0)
+}
+
+fn run_link_step(root: &Path, rendered_with: &BTreeMap<String, String>) -> Result<i32> {
+    let source = input_value(
+        rendered_with,
+        &["source", "sources", "src", "srcs", "path", "paths"],
+    )
+    .ok_or_else(|| CiError::Message("link requires `source` or `src`".to_string()))?;
+    let destination = input_value(
+        rendered_with,
+        &["destination", "destenation", "dest", "dst", "target"],
+    )
+    .ok_or_else(|| CiError::Message("link requires `destination` or `dest`".to_string()))?;
+
+    let specs = parse_path_list(source);
+    if specs.is_empty() {
+        return Err(CiError::Message(
+            "link requires at least one source path".to_string(),
+        ));
+    }
+
+    let replace = input_bool(rendered_with, &["replace", "overwrite"], false);
+    let sources = expand_action_sources(root, &specs, "link")?;
+    let destination_path = resolve_export_path(root, destination);
+    for source in &sources {
+        let target = export_target_path(source, &destination_path, destination, sources.len())?;
+        create_link_path(source, &target, replace)?;
     }
     Ok(0)
 }
@@ -2010,12 +2045,15 @@ fn run_sync_step(ctx: &AppContext, rendered_with: &BTreeMap<String, String>) -> 
     Ok(0)
 }
 
-fn expand_export_sources(root: &Path, specs: &[String]) -> Result<Vec<PathBuf>> {
+fn expand_action_sources(root: &Path, specs: &[String], action: &str) -> Result<Vec<PathBuf>> {
     let mut sources = Vec::new();
     for spec in specs {
         let pattern_path = resolve_export_path(root, spec);
         let pattern = pattern_path.to_str().ok_or_else(|| {
-            CiError::Message(format!("invalid export source {}", pattern_path.display()))
+            CiError::Message(format!(
+                "invalid {action} source {}",
+                pattern_path.display()
+            ))
         })?;
         let before = sources.len();
         for entry in glob(pattern)? {
@@ -2026,7 +2064,7 @@ fn expand_export_sources(root: &Path, specs: &[String]) -> Result<Vec<PathBuf>> 
         }
         if sources.len() == before {
             return Err(CiError::Message(format!(
-                "export source matched no paths: {spec}"
+                "{action} source matched no paths: {spec}"
             )));
         }
     }
@@ -2096,6 +2134,89 @@ fn copy_export_path(source: &Path, target: &Path, replace: bool) -> Result<()> {
     }
 
     copy_recursively(source, target)
+}
+
+fn create_link_path(source: &Path, target: &Path, replace: bool) -> Result<()> {
+    match fs::symlink_metadata(target) {
+        Ok(metadata) if replace => {
+            if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
+                fs::remove_dir_all(target)?;
+            } else {
+                fs::remove_file(target)?;
+            }
+        }
+        Ok(_) => {
+            return Err(CiError::Message(format!(
+                "link target already exists: {}; set `replace: true` or `overwrite: true`",
+                target.display()
+            )));
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.into()),
+    }
+
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    std::os::unix::fs::symlink(link_source_for_target(source, target), target)?;
+    Ok(())
+}
+
+fn link_source_for_target(source: &Path, target: &Path) -> PathBuf {
+    target
+        .parent()
+        .and_then(|parent| relative_path_between(parent, source))
+        .unwrap_or_else(|| source.to_path_buf())
+}
+
+fn relative_path_between(from: &Path, to: &Path) -> Option<PathBuf> {
+    if from.is_absolute() != to.is_absolute() {
+        return None;
+    }
+
+    let from_components = lexical_components(from)?;
+    let to_components = lexical_components(to)?;
+    let common = from_components
+        .iter()
+        .zip(&to_components)
+        .take_while(|(left, right)| left == right)
+        .count();
+
+    let mut relative = PathBuf::new();
+    for _ in common..from_components.len() {
+        relative.push("..");
+    }
+    for component in &to_components[common..] {
+        relative.push(component);
+    }
+    if relative.as_os_str().is_empty() {
+        relative.push(".");
+    }
+    Some(relative)
+}
+
+fn lexical_components(path: &Path) -> Option<Vec<std::ffi::OsString>> {
+    let mut components = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(_) => return None,
+            Component::RootDir => components.push(std::ffi::OsString::from("/")),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if components
+                    .last()
+                    .map(|value| value != ".." && value != "/")
+                    .unwrap_or(false)
+                {
+                    components.pop();
+                } else {
+                    components.push(std::ffi::OsString::from(".."));
+                }
+            }
+            Component::Normal(value) => components.push(value.to_os_string()),
+        }
+    }
+    Some(components)
 }
 
 fn input_value<'a>(values: &'a BTreeMap<String, String>, keys: &[&str]) -> Option<&'a str> {
@@ -3329,7 +3450,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use tempfile::TempDir;
 
@@ -3341,7 +3462,7 @@ mod tests {
         evaluate_condition, evaluate_condition_with_probe, executable_exists,
         generated_default_workflows, generated_native_container_image_name,
         generated_native_containerfile, normalized_rust_components, parse_cleanup_ignored_mode,
-        parse_path_list, run_export_step, ExpressionContext,
+        parse_path_list, run_export_step, run_link_step, ExpressionContext,
     };
 
     fn expr_ctx<'a>(
@@ -3749,6 +3870,61 @@ mod tests {
         assert_eq!(
             fs::read_to_string(temp.path().join("out/two.txt")).expect("read two"),
             "two"
+        );
+    }
+
+    #[test]
+    fn link_single_file_uses_relative_symlink_target() {
+        let temp = TempDir::new().expect("tempdir");
+        fs::write(temp.path().join("ci.x64"), "bin").expect("write source");
+
+        let mut inputs = BTreeMap::new();
+        inputs.insert("src".to_string(), "ci.x64".to_string());
+        inputs.insert("dest".to_string(), "bin/ci".to_string());
+
+        assert_eq!(
+            run_link_step(temp.path(), &inputs).expect("link should succeed"),
+            0
+        );
+        let link = temp.path().join("bin/ci");
+        assert!(fs::symlink_metadata(&link)
+            .expect("link metadata")
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::read_link(&link).expect("read link"),
+            PathBuf::from("../ci.x64")
+        );
+        assert_eq!(fs::read_to_string(&link).expect("read linked file"), "bin");
+    }
+
+    #[test]
+    fn link_existing_target_requires_replace_or_overwrite() {
+        let temp = TempDir::new().expect("tempdir");
+        fs::write(temp.path().join("ci.x64"), "new").expect("write source");
+        fs::write(temp.path().join("ci"), "old").expect("write existing");
+
+        let mut inputs = BTreeMap::new();
+        inputs.insert("src".to_string(), "ci.x64".to_string());
+        inputs.insert("dest".to_string(), "ci".to_string());
+
+        let err = run_link_step(temp.path(), &inputs).expect_err("link should fail");
+        assert!(err
+            .to_string()
+            .contains("set `replace: true` or `overwrite: true`"));
+        assert_eq!(
+            fs::read_to_string(temp.path().join("ci")).expect("read existing"),
+            "old"
+        );
+
+        inputs.insert("replace".to_string(), "true".to_string());
+        assert_eq!(
+            run_link_step(temp.path(), &inputs).expect("link should replace"),
+            0
+        );
+        assert_eq!(
+            fs::read_link(temp.path().join("ci")).expect("read replacement link"),
+            PathBuf::from("ci.x64")
         );
     }
 }
