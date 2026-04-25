@@ -1,3 +1,7 @@
+
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
+[![Release](https://github.com/noobping/ci/actions/workflows/release.yml/badge.svg)](https://github.com/noobping/ci/actions/workflows/release.yml)
+
 # ci
 
 `ci` is a small Git-native CI runner.
