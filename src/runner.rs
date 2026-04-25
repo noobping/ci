@@ -230,6 +230,17 @@ const EXPORT_ACTION_NAMES: &[&str] = &[
 const LINK_ACTION_NAMES: &[&str] = &["link", "ci/link", "symlink", "ci/symlink"];
 const COMMIT_ACTION_NAMES: &[&str] = &["commit", "ci/commit"];
 const SYNC_ACTION_NAMES: &[&str] = &["sync", "ci/sync"];
+const FILE_SOURCE_INPUT_KEYS: &[&str] = &[
+    "source", "sources", "src", "srcs", "from", "froms", "path", "paths",
+];
+const FILE_DESTINATION_INPUT_KEYS: &[&str] =
+    &["destination", "destenation", "dest", "dst", "to", "target"];
+const COMMIT_PATH_INPUT_KEYS: &[&str] = &[
+    "path", "paths", "source", "sources", "src", "srcs", "from", "froms",
+];
+const REMOTE_SOURCE_INPUT_KEYS: &[&str] = &["source", "src", "from"];
+const REMOTE_DESTINATION_INPUT_KEYS: &[&str] =
+    &["destination", "destenation", "dest", "dst", "to", "target"];
 
 pub fn cmd_list(ctx: &AppContext, args: &ListArgs) -> Result<i32> {
     let porcelain = args.use_porcelain(std::io::stdout().is_terminal());
@@ -1825,16 +1836,12 @@ fn run_clean_step(
 }
 
 fn run_export_step(root: &Path, rendered_with: &BTreeMap<String, String>) -> Result<i32> {
-    let source = input_value(
-        rendered_with,
-        &["source", "sources", "src", "srcs", "path", "paths"],
-    )
-    .ok_or_else(|| CiError::Message("export requires `source` or `src`".to_string()))?;
-    let destination = input_value(
-        rendered_with,
-        &["destination", "destenation", "dest", "dst", "target"],
-    )
-    .ok_or_else(|| CiError::Message("export requires `destination` or `dest`".to_string()))?;
+    let source = input_value(rendered_with, FILE_SOURCE_INPUT_KEYS).ok_or_else(|| {
+        CiError::Message("export requires `source`, `src`, or `from`".to_string())
+    })?;
+    let destination = input_value(rendered_with, FILE_DESTINATION_INPUT_KEYS).ok_or_else(|| {
+        CiError::Message("export requires `destination`, `dest`, or `to`".to_string())
+    })?;
 
     let specs = parse_path_list(source);
     if specs.is_empty() {
@@ -1854,16 +1861,11 @@ fn run_export_step(root: &Path, rendered_with: &BTreeMap<String, String>) -> Res
 }
 
 fn run_link_step(root: &Path, rendered_with: &BTreeMap<String, String>) -> Result<i32> {
-    let source = input_value(
-        rendered_with,
-        &["source", "sources", "src", "srcs", "path", "paths"],
-    )
-    .ok_or_else(|| CiError::Message("link requires `source` or `src`".to_string()))?;
-    let destination = input_value(
-        rendered_with,
-        &["destination", "destenation", "dest", "dst", "target"],
-    )
-    .ok_or_else(|| CiError::Message("link requires `destination` or `dest`".to_string()))?;
+    let source = input_value(rendered_with, FILE_SOURCE_INPUT_KEYS)
+        .ok_or_else(|| CiError::Message("link requires `source`, `src`, or `from`".to_string()))?;
+    let destination = input_value(rendered_with, FILE_DESTINATION_INPUT_KEYS).ok_or_else(|| {
+        CiError::Message("link requires `destination`, `dest`, or `to`".to_string())
+    })?;
 
     let specs = parse_path_list(source);
     if specs.is_empty() {
@@ -1883,12 +1885,9 @@ fn run_link_step(root: &Path, rendered_with: &BTreeMap<String, String>) -> Resul
 }
 
 fn run_commit_step(ctx: &AppContext, rendered_with: &BTreeMap<String, String>) -> Result<i32> {
-    let paths = input_value(
-        rendered_with,
-        &["path", "paths", "source", "sources", "src", "srcs"],
-    )
-    .map(parse_path_list)
-    .unwrap_or_default();
+    let paths = input_value(rendered_with, COMMIT_PATH_INPUT_KEYS)
+        .map(parse_path_list)
+        .unwrap_or_default();
     let staged_only = input_bool(
         rendered_with,
         &["staged", "staged-only", "staged_only"],
@@ -1947,12 +1946,9 @@ fn run_commit_step(ctx: &AppContext, rendered_with: &BTreeMap<String, String>) -
 
 fn run_sync_step(ctx: &AppContext, rendered_with: &BTreeMap<String, String>) -> Result<i32> {
     let remote = input_value(rendered_with, &["remote"]).unwrap_or("origin");
-    let source_remote = input_value(rendered_with, &["source", "src"]).unwrap_or(remote);
-    let destination_remote = input_value(
-        rendered_with,
-        &["destination", "destenation", "dest", "to", "target"],
-    )
-    .unwrap_or(remote);
+    let source_remote = input_value(rendered_with, REMOTE_SOURCE_INPUT_KEYS).unwrap_or(remote);
+    let destination_remote =
+        input_value(rendered_with, REMOTE_DESTINATION_INPUT_KEYS).unwrap_or(remote);
 
     if input_bool(rendered_with, &["mirror"], false) {
         let fetch_status = git_status(
@@ -3804,8 +3800,8 @@ mod tests {
         fs::write(temp.path().join("target/release/ci"), "bin").expect("write source");
 
         let mut inputs = BTreeMap::new();
-        inputs.insert("src".to_string(), "target/release/ci".to_string());
-        inputs.insert("dest".to_string(), "dist/ci".to_string());
+        inputs.insert("from".to_string(), "target/release/ci".to_string());
+        inputs.insert("to".to_string(), "dist/ci".to_string());
 
         assert_eq!(
             run_export_step(temp.path(), &inputs).expect("export should succeed"),
@@ -3879,8 +3875,8 @@ mod tests {
         fs::write(temp.path().join("ci.x64"), "bin").expect("write source");
 
         let mut inputs = BTreeMap::new();
-        inputs.insert("src".to_string(), "ci.x64".to_string());
-        inputs.insert("dest".to_string(), "bin/ci".to_string());
+        inputs.insert("from".to_string(), "ci.x64".to_string());
+        inputs.insert("to".to_string(), "bin/ci".to_string());
 
         assert_eq!(
             run_link_step(temp.path(), &inputs).expect("link should succeed"),

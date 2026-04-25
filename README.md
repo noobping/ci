@@ -137,10 +137,10 @@ Native `.ci/*.yml` steps can also use built-in `uses:` or `use:` action sources.
 - `cache`: restore and save cache paths using `with.key` and `with.path`
 - `upload-artifact`: store artifacts using `with.name` and `with.path`
 - `download-artifact`: restore artifacts using `with.name` and optional `with.path`
-- `export`: copy `source`/`src` paths to `destination`/`dest`; multiple sources use the destination as a directory, while a single source can use an exact file path; set `replace: true` or `overwrite: true` to replace an existing target
-- `link`: create symlinks from `source`/`src` to `destination`/`dest`; multiple sources use the destination as a directory, while a single source can use an exact link path; set `replace: true` or `overwrite: true` to replace an existing target
-- `commit`: stage paths and create a commit with `message`/`msg`
-- `sync`: pull and push the current branch, or use `mirror: true` with `source`/`src` and `destination`/`dest` remotes
+- `export`: copy `source`/`src`/`from` paths to `destination`/`dest`/`to`; multiple sources use the destination as a directory, while a single source can use an exact file path; set `replace: true` or `overwrite: true` to replace an existing target
+- `link`: create symlinks from `source`/`src`/`from` to `destination`/`dest`/`to`; multiple sources use the destination as a directory, while a single source can use an exact link path; set `replace: true` or `overwrite: true` to replace an existing target
+- `commit`: stage paths and create a commit with `message`/`msg`; staged paths may use `path`, `source`, `src`, or `from`
+- `sync`: pull and push the current branch, or use `mirror: true` with `source`/`src`/`from` and `destination`/`dest`/`to` remotes
 - `clean`: run `git clean -fd` by default; `ignored: true` maps to `git clean -fdx`, `ignored: only` maps to `git clean -fdX`, `purge: true` runs `git fetch --all --prune`, `cargo: true` runs `cargo clean`, `path` or `paths` removes repo-relative targets, and native `.ci/*.yml` steps may extend the cleanup with an inline `run:` block
 
 `export` handles files and build outputs. `commit` and `sync` are separate repository actions.
