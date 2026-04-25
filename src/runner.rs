@@ -2357,7 +2357,7 @@ impl ContainerBackend {
     }
 
     fn run_shell(&self, spec: &ContainerShellSpec<'_>) -> Result<i32> {
-        let mount = format!("{}:/work", spec.repo_root.display());
+        let mount = self.bind_mount(spec.repo_root, "/work");
         let container_workdir = if let Ok(relative) = spec.workdir.strip_prefix(spec.repo_root) {
             if relative.as_os_str().is_empty() {
                 "/work".to_string()
@@ -2401,7 +2401,7 @@ impl ContainerBackend {
     }
 
     fn command_exists(&self, spec: &ContainerCommandExistsSpec<'_>, name: &str) -> Result<bool> {
-        let mount = format!("{}:/work", spec.repo_root.display());
+        let mount = self.bind_mount(spec.repo_root, "/work");
         let mut command = Command::new(&self.runtime);
         command
             .arg("run")
@@ -2441,7 +2441,7 @@ impl ContainerBackend {
         args: &[String],
         platform: Option<&str>,
     ) -> Result<i32> {
-        let mount = format!("{}:/action", action_dir.display());
+        let mount = self.bind_mount(action_dir, "/action");
         let mut command = Command::new(&self.runtime);
         command
             .arg("run")
@@ -2508,6 +2508,14 @@ impl ContainerBackend {
                 name, service.image
             )))
         }
+    }
+
+    fn bind_mount(&self, source: &Path, target: &str) -> String {
+        let mut mount = format!("{}:{target}", source.display());
+        if self.runtime == "podman" {
+            mount.push_str(":z");
+        }
+        mount
     }
 
     fn stop_container(&self, name: &str) -> Result<()> {
@@ -2652,16 +2660,16 @@ fn evaluate_condition_with_probe(
     };
     let expr = trim_expr(expr);
 
-    if expr.contains("||") {
-        for part in expr.split("||") {
+    if let Some(parts) = split_logical_operator(expr, "||", "or") {
+        for part in parts {
             if evaluate_condition_with_probe(Some(part), ctx, command_probe)? {
                 return Ok(true);
             }
         }
         return Ok(false);
     }
-    if expr.contains("&&") {
-        for part in expr.split("&&") {
+    if let Some(parts) = split_logical_operator(expr, "&&", "and") {
+        for part in parts {
             if !evaluate_condition_with_probe(Some(part), ctx, command_probe)? {
                 return Ok(false);
             }
@@ -2723,6 +2731,69 @@ fn evaluate_condition_with_probe(
     Ok(resolve_expr_value(expr, ctx)
         .map(|value| !value.is_empty() && value != "false")
         .unwrap_or(false))
+}
+
+fn split_logical_operator<'a>(expr: &'a str, symbol: &str, word: &str) -> Option<Vec<&'a str>> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut depth = 0usize;
+    let mut quote = None;
+    let mut chars = expr.char_indices().peekable();
+
+    while let Some((index, ch)) = chars.next() {
+        if let Some(active_quote) = quote {
+            if ch == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+
+        match ch {
+            '\'' | '"' => quote = Some(ch),
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            _ if depth == 0 && expr[index..].starts_with(symbol) => {
+                parts.push(expr[start..index].trim());
+                start = index + symbol.len();
+                for _ in 1..symbol.chars().count() {
+                    chars.next();
+                }
+            }
+            _ if depth == 0 && word_operator_at(expr, index, word) => {
+                parts.push(expr[start..index].trim());
+                start = index + word.len();
+                for _ in 1..word.chars().count() {
+                    chars.next();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        parts.push(expr[start..].trim());
+        Some(parts)
+    }
+}
+
+fn word_operator_at(expr: &str, index: usize, word: &str) -> bool {
+    expr[index..].starts_with(word)
+        && expr[..index]
+            .chars()
+            .next_back()
+            .map(|ch| !is_condition_word_char(ch))
+            .unwrap_or(true)
+        && expr[index + word.len()..]
+            .chars()
+            .next()
+            .map(|ch| !is_condition_word_char(ch))
+            .unwrap_or(true)
+}
+
+fn is_condition_word_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-')
 }
 
 fn interpolate_expressions(value: &str, ctx: &ExpressionContext<'_>) -> String {
@@ -3205,8 +3276,9 @@ mod tests {
         let temp = TempDir::new().expect("tempdir");
         let env = BTreeMap::new();
         let ctx = expr_ctx(temp.path(), &env, true, false);
-        let probe =
-            |name: &str| -> crate::error::Result<bool> { Ok(name == "definitely-ci-probe-tool") };
+        let probe = |name: &str| -> crate::error::Result<bool> {
+            Ok(matches!(name, "definitely-ci-probe-tool" | "toolbox"))
+        };
 
         assert!(evaluate_condition_with_probe(
             Some("exists(definitely-ci-probe-tool)"),
@@ -3226,6 +3298,24 @@ mod tests {
             Some(&probe)
         )
         .expect("evaluate absent"));
+        assert!(!evaluate_condition_with_probe(
+            Some("missing(definitely-ci-probe-tool) and exists(toolbox)"),
+            &ctx,
+            Some(&probe)
+        )
+        .expect("evaluate word and"));
+        assert!(evaluate_condition_with_probe(
+            Some("missing(definitely-ci-probe-tool-missing) and exists(toolbox)"),
+            &ctx,
+            Some(&probe)
+        )
+        .expect("evaluate fallback condition"));
+        assert!(evaluate_condition_with_probe(
+            Some("exists(definitely-ci-probe-tool) or exists(nope)"),
+            &ctx,
+            Some(&probe)
+        )
+        .expect("evaluate word or"));
     }
 
     #[test]
