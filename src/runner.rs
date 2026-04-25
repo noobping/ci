@@ -2960,16 +2960,26 @@ fn trim_literal(value: &str) -> String {
 enum ConditionTarget {
     Generic(String),
     Path(String),
+    File(String),
+    Directory(String),
     Env(String),
+    Command(String),
 }
 
 fn resolve_condition_target(value: &str, ctx: &ExpressionContext<'_>) -> ConditionTarget {
     let value = trim_literal(value);
-    if let Some(name) = value.strip_prefix("env:") {
-        return ConditionTarget::Env(resolve_expr_value(name, ctx).unwrap_or_default());
-    }
-    if let Some(path) = value.strip_prefix("path:") {
-        return ConditionTarget::Path(resolve_expr_value(path, ctx).unwrap_or_default());
+    if let Some((kind, target)) = value.split_once(':') {
+        let target = resolve_expr_value(target, ctx).unwrap_or_default();
+        match kind {
+            "env" => return ConditionTarget::Env(target),
+            "path" => return ConditionTarget::Path(target),
+            "file" => return ConditionTarget::File(target),
+            "dir" | "directory" => return ConditionTarget::Directory(target),
+            "cmd" | "command" | "exe" | "executable" => {
+                return ConditionTarget::Command(target);
+            }
+            _ => {}
+        }
     }
     ConditionTarget::Generic(resolve_expr_value(&value, ctx).unwrap_or_default())
 }
@@ -2989,7 +2999,10 @@ fn condition_target_exists(
     match target {
         ConditionTarget::Generic(value) => target_exists(value, ctx.root, command_probe),
         ConditionTarget::Path(value) => Ok(path_target_exists(value, ctx.root)),
+        ConditionTarget::File(value) => Ok(file_target_exists(value, ctx.root)),
+        ConditionTarget::Directory(value) => Ok(directory_target_exists(value, ctx.root)),
         ConditionTarget::Env(name) => Ok(env_target_exists(name, ctx.env)),
+        ConditionTarget::Command(value) => command_target_exists(value, ctx.root, command_probe),
     }
 }
 
@@ -3036,6 +3049,30 @@ fn target_exists(
     Ok(executable_exists(name))
 }
 
+fn command_target_exists(
+    name: &str,
+    root: &Path,
+    command_probe: Option<&ConditionCommandProbe<'_>>,
+) -> Result<bool> {
+    if name.is_empty() {
+        return Ok(false);
+    }
+
+    let candidate = Path::new(name);
+    if candidate.is_absolute() {
+        return Ok(executable_file_exists(candidate));
+    }
+    if candidate.components().count() > 1 || name.starts_with('.') {
+        return Ok(executable_file_exists(&root.join(candidate)));
+    }
+
+    if let Some(command_probe) = command_probe {
+        return command_probe(name);
+    }
+
+    Ok(executable_exists(name))
+}
+
 fn path_target_exists(name: &str, root: &Path) -> bool {
     if name.is_empty() {
         return false;
@@ -3046,6 +3083,35 @@ fn path_target_exists(name: &str, root: &Path) -> bool {
         filesystem_entry_exists(candidate)
     } else {
         filesystem_entry_exists(&root.join(candidate))
+    }
+}
+
+fn file_target_exists(name: &str, root: &Path) -> bool {
+    path_target_has_kind(name, root, |path| {
+        fs::metadata(path)
+            .map(|meta| meta.is_file())
+            .unwrap_or(false)
+    })
+}
+
+fn directory_target_exists(name: &str, root: &Path) -> bool {
+    path_target_has_kind(name, root, |path| {
+        fs::metadata(path)
+            .map(|meta| meta.is_dir())
+            .unwrap_or(false)
+    })
+}
+
+fn path_target_has_kind(name: &str, root: &Path, predicate: impl FnOnce(&Path) -> bool) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+
+    let candidate = Path::new(name);
+    if candidate.is_absolute() {
+        predicate(candidate)
+    } else {
+        predicate(&root.join(candidate))
     }
 }
 
@@ -3390,6 +3456,14 @@ mod tests {
             Some(&missing),
             &expr_ctx(temp.path(), &env, true, false)
         ));
+        assert!(evaluate_condition(
+            Some(&format!("exists(cmd:'{tool}')")),
+            &expr_ctx(temp.path(), &env, true, false)
+        ));
+        assert!(evaluate_condition(
+            Some(&format!("missing(command:'{tool}-missing')")),
+            &expr_ctx(temp.path(), &env, true, false)
+        ));
         assert!(executable_exists(&tool));
         assert!(!executable_exists(&format!("{tool}-missing")));
     }
@@ -3410,6 +3484,11 @@ mod tests {
         assert!(evaluate_condition(Some("exists(marker.txt)"), &ctx));
         assert!(evaluate_condition(Some("exists(path:marker.txt)"), &ctx));
         assert!(evaluate_condition(Some("exists(path:env.BUILD_DIR)"), &ctx));
+        assert!(evaluate_condition(Some("exists(file:marker.txt)"), &ctx));
+        assert!(evaluate_condition(Some("missing(file:target)"), &ctx));
+        assert!(evaluate_condition(Some("exists(dir:target)"), &ctx));
+        assert!(evaluate_condition(Some("exists(directory:target)"), &ctx));
+        assert!(evaluate_condition(Some("missing(dir:marker.txt)"), &ctx));
         assert!(evaluate_condition(Some("exists(env:HOME)"), &ctx));
         assert!(evaluate_condition(
             Some("missing(env:NOT_SET_FOR_TEST)"),
@@ -3433,6 +3512,18 @@ mod tests {
             Some(&probe)
         )
         .expect("evaluate exists"));
+        assert!(evaluate_condition_with_probe(
+            Some("exists(cmd:definitely-ci-probe-tool)"),
+            &ctx,
+            Some(&probe)
+        )
+        .expect("evaluate command exists"));
+        assert!(evaluate_condition_with_probe(
+            Some("exists(executable:toolbox)"),
+            &ctx,
+            Some(&probe)
+        )
+        .expect("evaluate executable exists"));
         assert!(!evaluate_condition_with_probe(
             Some("missing(definitely-ci-probe-tool)"),
             &ctx,

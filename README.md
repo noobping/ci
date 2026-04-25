@@ -109,10 +109,12 @@ Native `.ci/*.yml` steps also support first-class conditions:
 - `if: success` or `if: success()`: run when the current step path is still successful. This is the default when `if` is omitted.
 - `if: failure` or `if: failure()`: run after the previous executed step failed.
 - `if: always` or `if: always()`: run regardless of the previous step result.
-- `if: exists(cargo)`: true when a bare command exists on `PATH`.
+- `if: exists(cargo)`: true when a repo-relative path exists, or when a bare command exists on `PATH`.
 - `if: exists(path:Cargo.toml)`: true when a repo-relative or absolute file/directory path exists.
-- `if: exists(env:HOME)`: true when a workflow/step env var is set, or when the host environment provides it.
-- `if: missing(cargo)`: inverse existence check.
+- `if: exists(file:Cargo.toml)` / `if: exists(dir:src)`: true only for files or directories.
+- `if: exists(cmd:cargo)`: true when an executable command exists; `command:`, `exe:`, and `executable:` are aliases.
+- `if: exists(env:USE_DEBUG)`: true when a workflow/step env var is set, or when the host environment provides it.
+- `if: missing(cargo)`: inverse existence check. The same optional target prefixes work with `missing(...)`.
 - When a workflow/container default is set, native `run:` steps use that container by default. Use `container: false` on a step that intentionally targets the host, such as installing files under `~`.
 
 To add a fallback step after a failure and still let the workflow recover, mark the failing step with `continue-on-error: true`.
