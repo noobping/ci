@@ -104,6 +104,7 @@ pub struct NativeStep {
     pub name: Option<String>,
     pub run: Option<String>,
     pub uses: Option<String>,
+    pub container: Option<bool>,
     pub with: BTreeMap<String, String>,
     pub extra: BTreeMap<String, String>,
     pub shell: Option<String>,
@@ -190,6 +191,7 @@ struct RawNativeStep {
     #[serde(rename = "use")]
     use_value: Option<String>,
     uses: Option<String>,
+    container: Option<bool>,
     shell: Option<String>,
     #[serde(default)]
     env: BTreeMap<String, Value>,
@@ -214,6 +216,7 @@ impl RawNativeStep {
             run,
             use_value,
             uses,
+            container,
             shell,
             env,
             with,
@@ -237,6 +240,7 @@ impl RawNativeStep {
             name,
             run,
             uses,
+            container,
             with: stringify_yaml_map(with),
             extra: stringify_yaml_map(extra),
             shell,
@@ -875,6 +879,28 @@ steps:
         assert!(err
             .to_string()
             .contains("must define only one of `use` or `uses`"));
+    }
+
+    #[test]
+    fn native_step_accepts_container_override() {
+        let file: NativeWorkflowFile = serde_yaml::from_str(
+            r#"
+steps:
+  - name: Install locally
+    container: false
+    run: ci completion bash
+"#,
+        )
+        .expect("parse workflow");
+        let step = file
+            .steps
+            .into_iter()
+            .next()
+            .expect("step")
+            .into_step(Path::new(".ci/build.yml"), 0)
+            .expect("valid step");
+
+        assert_eq!(step.container, Some(false));
     }
 
     #[test]

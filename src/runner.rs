@@ -600,7 +600,8 @@ fn run_native_yaml(
             },
             ..preliminary_expr
         };
-        let should_run = if let Some(container) = container {
+        let step_container = container.filter(|_| step.container.unwrap_or(true));
+        let should_run = if let Some(container) = step_container {
             let command_probe = |name: &str| {
                 container.backend.command_exists(
                     &ContainerCommandExistsSpec {
@@ -652,7 +653,7 @@ fn run_native_yaml(
                     .map(Path::new)
                     .or(resolved.execution.workspace.as_deref()),
             );
-            if let Some(container) = container {
+            if let Some(container) = step_container {
                 container.backend.run_shell(&ContainerShellSpec {
                     image: &container.image,
                     repo_root: &ctx.repo.root,

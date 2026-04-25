@@ -111,6 +111,7 @@ Native `.ci/*.yml` steps also support first-class conditions:
 - `if: exists(path:Cargo.toml)`: true when a repo-relative or absolute file/directory path exists.
 - `if: exists(env:HOME)`: true when a workflow/step env var is set, or when the host environment provides it.
 - `if: missing(cargo)`: inverse existence check.
+- When a workflow/container default is set, native `run:` steps use that container by default. Use `container: false` on a step that intentionally targets the host, such as installing files under `~`.
 
 To add a fallback step after a failure and still let the workflow recover, mark the failing step with `continue-on-error: true`.
 
