@@ -47,6 +47,10 @@ impl Output {
         self.verbosity
     }
 
+    pub fn is_verbose(&self) -> bool {
+        matches!(self.verbosity, Verbosity::Verbose(_))
+    }
+
     pub fn info(&self, message: impl AsRef<str>) {
         if !matches!(self.verbosity, Verbosity::Quiet | Verbosity::Silent) {
             tracing::info!("{}", message.as_ref());
@@ -80,12 +84,20 @@ fn init_tracing(global: &GlobalOptions) {
             .with_max_level(Level::WARN)
             .or_else(std::io::stdout);
         let ansi = color_enabled(global.color);
+        let max_level = if global.verbose > 1 {
+            Level::TRACE
+        } else if global.verbose > 0 {
+            Level::DEBUG
+        } else {
+            Level::INFO
+        };
 
         let _ = tracing_subscriber::fmt()
             .compact()
             .without_time()
             .with_target(false)
             .with_ansi(ansi)
+            .with_max_level(max_level)
             .with_writer(writer)
             .try_init();
     });
@@ -135,6 +147,7 @@ mod tests {
             Output::from_globals(&global).verbosity(),
             Verbosity::Verbose(1)
         );
+        assert!(Output::from_globals(&global).is_verbose());
     }
 
     #[test]
@@ -146,6 +159,7 @@ mod tests {
             Output::from_settings(&global, Some(&defaults)).verbosity(),
             Verbosity::Silent
         );
+        assert!(!Output::from_settings(&global, Some(&defaults)).is_verbose());
     }
 
     #[test]

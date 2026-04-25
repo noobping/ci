@@ -1265,6 +1265,8 @@ fn run_actions_uses_step(
 
     if step.uses.starts_with("docker://") {
         let image = step.uses.trim_start_matches("docker://");
+        ctx.output
+            .verbose(format!("running docker action `{}`", step.uses));
         let platform = container_platform(execution.resolved, execution.arch);
         return execution
             .backend
@@ -1286,6 +1288,11 @@ fn run_actions_uses_step(
     let platform = container_platform(execution.resolved, execution.arch);
     if step.uses.starts_with("./") {
         let dir = ctx.repo.root.join(step.uses.trim_start_matches("./"));
+        ctx.output.verbose(format!(
+            "running local action `{}` from {}",
+            step.uses,
+            dir.display()
+        ));
         return run_local_action(
             ctx,
             execution.matrix,
@@ -1297,6 +1304,8 @@ fn run_actions_uses_step(
         );
     }
 
+    ctx.output
+        .verbose(format!("resolving remote action `{}`", step.uses));
     let remote = parse_remote_action(&step.uses)?;
     let repo = ctx.git.clone_action_repo(
         &ctx.repo.actions_cache,
@@ -1335,6 +1344,8 @@ fn run_builtin_step(
 
     match normalized.as_str() {
         "checkout" | "actions/checkout" => {
+            ctx.output
+                .verbose(format!("running built-in action `{}`", invocation.uses));
             ctx.git.restore_tracked_files(&ctx.repo)?;
             let wants_submodules = rendered_with
                 .get("submodules")
@@ -1346,10 +1357,14 @@ fn run_builtin_step(
             Ok(Some(0))
         }
         "submodules" | "ci/submodules" => {
+            ctx.output
+                .verbose(format!("running built-in action `{}`", invocation.uses));
             ctx.git.ensure_submodules(&ctx.repo)?;
             Ok(Some(0))
         }
         "cache" | "actions/cache" => {
+            ctx.output
+                .verbose(format!("running built-in action `{}`", invocation.uses));
             let key = rendered_with
                 .get("key")
                 .cloned()
@@ -1361,6 +1376,8 @@ fn run_builtin_step(
             Ok(Some(0))
         }
         "upload-artifact" | "actions/upload-artifact" => {
+            ctx.output
+                .verbose(format!("running built-in action `{}`", invocation.uses));
             let name = rendered_with
                 .get("name")
                 .cloned()
@@ -1376,6 +1393,8 @@ fn run_builtin_step(
             Ok(Some(0))
         }
         "download-artifact" | "actions/download-artifact" => {
+            ctx.output
+                .verbose(format!("running built-in action `{}`", invocation.uses));
             let name = rendered_with
                 .get("name")
                 .cloned()
@@ -1392,42 +1411,58 @@ fn run_builtin_step(
             Ok(Some(0))
         }
         name if EXPORT_ACTION_NAMES.contains(&name) => {
+            ctx.output
+                .verbose(format!("running built-in action `{}`", invocation.uses));
             Ok(Some(run_export_step(invocation.expr.root, &rendered_with)?))
         }
         name if COMMIT_ACTION_NAMES.contains(&name) => {
+            ctx.output
+                .verbose(format!("running built-in action `{}`", invocation.uses));
             Ok(Some(run_commit_step(ctx, &rendered_with)?))
         }
-        name if SYNC_ACTION_NAMES.contains(&name) => Ok(Some(run_sync_step(ctx, &rendered_with)?)),
-        "clean" | "ci/clean" => Ok(Some(run_clean_step(
-            ctx,
-            invocation.expr.root,
-            &rendered_with,
-            invocation.inline_run.as_deref(),
-            invocation
-                .shell
-                .as_deref()
-                .unwrap_or(&ctx.config.defaults.shell),
-            invocation
-                .workdir
-                .as_deref()
-                .unwrap_or(invocation.expr.root),
-            invocation.expr,
-        )?)),
-        "cleanup" | "ci/cleanup" => Ok(Some(run_cleanup_step(
-            ctx,
-            invocation.expr.root,
-            rendered_with.get("path").map(String::as_str),
-            rendered_with.get("paths").map(String::as_str),
-            rendered_with
-                .get("missing-ok")
-                .or_else(|| rendered_with.get("missing_ok"))
-                .map(String::as_str),
-            rendered_with
-                .get("ignored")
-                .or_else(|| rendered_with.get("include-ignored"))
-                .or_else(|| rendered_with.get("include_ignored"))
-                .map(String::as_str),
-        )?)),
+        name if SYNC_ACTION_NAMES.contains(&name) => {
+            ctx.output
+                .verbose(format!("running built-in action `{}`", invocation.uses));
+            Ok(Some(run_sync_step(ctx, &rendered_with)?))
+        }
+        "clean" | "ci/clean" => {
+            ctx.output
+                .verbose(format!("running built-in action `{}`", invocation.uses));
+            Ok(Some(run_clean_step(
+                ctx,
+                invocation.expr.root,
+                &rendered_with,
+                invocation.inline_run.as_deref(),
+                invocation
+                    .shell
+                    .as_deref()
+                    .unwrap_or(&ctx.config.defaults.shell),
+                invocation
+                    .workdir
+                    .as_deref()
+                    .unwrap_or(invocation.expr.root),
+                invocation.expr,
+            )?))
+        }
+        "cleanup" | "ci/cleanup" => {
+            ctx.output
+                .verbose(format!("running built-in action `{}`", invocation.uses));
+            Ok(Some(run_cleanup_step(
+                ctx,
+                invocation.expr.root,
+                rendered_with.get("path").map(String::as_str),
+                rendered_with.get("paths").map(String::as_str),
+                rendered_with
+                    .get("missing-ok")
+                    .or_else(|| rendered_with.get("missing_ok"))
+                    .map(String::as_str),
+                rendered_with
+                    .get("ignored")
+                    .or_else(|| rendered_with.get("include-ignored"))
+                    .or_else(|| rendered_with.get("include_ignored"))
+                    .map(String::as_str),
+            )?))
+        }
         _ => Ok(None),
     }
 }
@@ -1967,7 +2002,6 @@ fn sync_pull_strategy(values: &BTreeMap<String, String>) -> String {
 }
 
 fn git_status(ctx: &AppContext, args: &[String]) -> Result<i32> {
-    ctx.output.verbose(format!("git {}", args.join(" ")));
     let args = args.iter().map(String::as_str).collect::<Vec<_>>();
     ctx.git.status_in_dir(&ctx.repo.root, &args)
 }
