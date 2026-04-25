@@ -6,44 +6,41 @@ It installs itself into a local or bare Git repository, behaves like Git hooks, 
 
 No daemon. No server. No web UI. If Git can run a hook, Git can run `ci`.
 
-## Build
+## Build from source
 
 ```sh
 cargo build --release
 ```
 
-## Basic usage
-
-```sh
-ci list
-ci list --porcelain
-ci run
-ci run build
-ci build
-ci run --arch x64,arm64 build
-ci run --tech node build
-ci run --event pre-push
-ci install --mode link --hooks pre-commit,pre-push
-ci status
-ci explain pre-push
-ci completion bash
-ci man --dir ./target/man
-ci clean --mode move --dest ./ci-artifacts
-ci update
-ci uninstall --restore
-```
-
 ## Commands
 
-`ci` keeps the core commands from the original MVP and adds:
+Core commands:
 
-- `status`: validate repo/config/hooks/runtimes/cache/store state
-- `explain`: show why an event or workflow matched
-- `clean`: export or keep recorded artifacts from managed run manifests
-- `completion`: generate shell completion scripts
-- `man`: generate `man1` pages from the current CLI
+- `run`: run one or more workflows.
+- `list`: list discovered workflows.
+- `install`: install managed Git hooks.
+- `uninstall`: remove managed Git hooks.
+- `update`: refresh the installed runner.
+- `hook`: run as a Git hook entrypoint.
+- `status`: validate repo, config, hooks, runtimes, cache, and store state.
+- `explain`: show why an event or workflow matched.
+- `clean`: export or keep recorded artifacts from run manifests.
+- `completion`: generate shell completion scripts.
+- `man`: generate `man1` pages.
+- `init`: create `.ci/build.yml`.
+- `self`: print information about the current `ci` binary.
 
 If the first command does not match a built-in command, `ci` treats it as a workflow name. For example, `ci build` is equivalent to `ci run build`.
+
+Global output controls:
+
+```sh
+ci --verbose build
+ci --quiet build
+ci --silent build
+```
+
+Verbose and quiet/silent modes are passed to supported runner-owned commands, such as Git. User-authored `run:` scripts are left exactly as written.
 
 ## Script-friendly list output
 
@@ -66,7 +63,25 @@ Use `--porcelain` to force that format on a terminal, or `--no-porcelain` to kee
 
 ## Workflow sources
 
-If a repository has no workflows, `ci` auto-detects a basic `build` workflow for supported stacks. Rust, Node.js, Go, Python packages, Maven, Gradle, and .NET projects get a default build command; when the host tool is not available, the generated workflow uses the matching container automatically. Use `-t`/`--type`/`--tech`/`--tech-stack` to choose the stack explicitly.
+If a repository has no workflows, `ci` auto-detects a basic `build` workflow for supported stacks. Rust, Node.js, Go, Python packages, Maven, Gradle, and .NET projects get a default build command; when the host tool is not available, that generated workflow uses the matching container automatically.
+
+Choose a stack explicitly when auto-detection is not enough:
+
+```sh
+ci build --tech rust
+ci build -t node
+ci build --type golang
+ci build --tech-stack py
+```
+
+Workflow sources:
+
+- Native YAML: `.ci/build.yml`, `.ci/test.yaml`
+- Native executable: `.ci/build.sh`
+- Directory metadata: `.ci/release/workflow.yml`
+- Containerfile workflow: `.ci/image/Containerfile`
+- GitHub Actions: `.github/workflows/*.yml`
+- Gitea Actions: `.gitea/workflows/*.yml`
 
 Executable scripts:
 
@@ -74,7 +89,7 @@ Executable scripts:
 .ci/build.sh
 ```
 
-YAML-ish workflow files:
+Native YAML workflow files:
 
 ```yaml
 name: build
@@ -182,21 +197,7 @@ steps:
     run: printf '%s\n' "$HOME"
 ```
 
-Container workflows:
-
-```text
-.ci/rust/Containerfile
-.ci/rust/Dockerfile
-```
-
-GitHub/Gitea workflow files:
-
-```text
-.github/workflows/self-host.yml
-.gitea/workflows/self-host.yml
-```
-
-`ci` prefers `podman`, then falls back to `docker`. Git commands can use the host binary or fall back to `docker.io/alpine/git:latest` in `auto`/`alias` mode.
+Containerfile workflow and GitHub/Gitea examples are covered below. `ci` prefers `podman`, then falls back to `docker`. Git commands can use the host binary or fall back to `docker.io/alpine/git:latest` in `auto`/`alias` mode.
 
 ## Config
 
@@ -212,7 +213,12 @@ Example:
 
 ```yaml
 silent: true
+fail_fast: true
 tech: rust
+arch:
+  - x64
+  - arm64
+
 container:
   arch:
     - x64
@@ -222,11 +228,160 @@ container:
     - cargo-clippy
   packages:
     - htop
+
+git_mode: auto
+git_image: docker.io/alpine/git:latest
+recursive_checkout: true
+
+branches:
+  allow:
+    - main
+    - develop
+
+workflows:
+  build:
+    branches:
+      allow:
+        - main
+        - develop
+
+hooks:
+  pre-push:
+    branches:
+      allow:
+        - main
 ```
 
 In `.ci/config.yml`, default fields can be written directly at the top level; wrapping them in `defaults:` is still accepted. In workflow files, `defaults:` can set workflow defaults such as `tech`, `container`, `execution`, `branches`, `artifacts`, and `env`; direct workflow fields override those defaults.
 
 `--arch` accepts comma-separated values and can be repeated, so `--arch x64,arm64` and `--arch x64 --arch arm64` are equivalent. `arch` accepts either one value or a YAML list and is also used as the default `container.arch` when the container arch list is omitted. Architecture is an execution setting. The selected execution architecture is exposed as `CI_ARCH`; the host machine architecture is exposed as `CI_HOST_ARCH`. Native YAML workflows can run inside a generated container with config-level `container`, workflow `defaults.container`, workflow-level `container`, or a selected tech stack; workflow-level settings override the defaults. Use `-c`/`--container` to force a generated container for native workflows, or `-C`/`--no-container` to ignore configured native containers and run native steps on the host. `tech`, `type`, `tech-stack`, and `container.type` accept `auto`, `general`, `rust`, `node`, `go`, `python`, `maven`, `gradle`, and `dotnet`; common aliases such as `npm`, `js`, `golang`, `py`, and `.net` are accepted. Omitted/`auto` detects the stack from project files and step commands, then falls back to a general Debian image. Rust containers support `components`, installed with `rustup component add`; `cargo-fmt` maps to `rustfmt` and `cargo-clippy` maps to `clippy`. When a container workflow, native container workflow, or action does not set `container.platform`, `ci` maps the selected arch to a podman/docker platform such as `linux/amd64` or `linux/arm64`.
+
+Workflow-local defaults:
+
+```yaml
+name: build
+defaults:
+  tech: node
+  container:
+    packages:
+      - git
+  env:
+    NODE_ENV: production
+
+steps:
+  - run: npm ci
+  - run: npm run build --if-present
+```
+
+## Tech Stacks And Containers
+
+`tech`, `type`, `tech-stack`, and `container.type` accept:
+
+- `auto`
+- `general`
+- `rust`
+- `node`
+- `go`
+- `python`
+- `maven`
+- `gradle`
+- `dotnet`
+
+Common aliases such as `npm`, `js`, `golang`, `py`, `.net`, and `csharp` are accepted.
+
+Default images:
+
+- Rust: `docker.io/library/rust:latest`
+- Node.js: `docker.io/library/node:22-bookworm-slim`
+- Go: `docker.io/library/golang:latest`
+- Python: `docker.io/library/python:3`
+- Maven: `docker.io/library/maven:latest`
+- Gradle: `docker.io/library/gradle:latest`
+- .NET: `mcr.microsoft.com/dotnet/sdk:latest`
+- General: `docker.io/library/debian:stable-slim`
+
+Force or disable containers for native workflows:
+
+```sh
+ci run --container build
+ci run --no-container build
+ci run -c build
+ci run -C build
+```
+
+Run for multiple container architectures:
+
+```yaml
+container:
+  arch:
+    - x64
+    - arm64
+```
+
+If `container.arch` is set and no `--arch` override is provided, native container workflows run once per listed architecture.
+
+## Containerfile Examples
+
+Use a custom image for native workflow steps:
+
+```Dockerfile
+# Containerfile.ci
+FROM docker.io/library/rust:latest
+RUN rustup component add rustfmt clippy
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+```
+
+```sh
+podman build -t localhost/my-project-ci -f Containerfile.ci .
+```
+
+```yaml
+name: build
+container:
+  image: localhost/my-project-ci
+  arch:
+    - x64
+    - arm64
+
+steps:
+  - run: cargo fmt --check
+  - run: cargo test --all
+  - run: cargo build --release
+```
+
+Use a Containerfile as a workflow:
+
+```Dockerfile
+# .ci/image/Containerfile
+FROM docker.io/library/rust:latest
+WORKDIR /work
+COPY . .
+RUN cargo test --all
+RUN cargo build --release
+```
+
+Optional metadata for that workflow:
+
+```yaml
+# .ci/image/workflow.yml
+on:
+  - manual
+  - pre-push
+container:
+  arch:
+    - x64
+    - arm64
+```
+
+Run it:
+
+```sh
+ci run image
+```
+
+Containerfile workflows build with the repository root as context. Put checks in `RUN` instructions or in the image entrypoint.
 
 ## Actions compatibility
 
@@ -244,6 +399,96 @@ Built-in shims exist for:
 - `actions/cache`
 - `actions/upload-artifact`
 - `actions/download-artifact`
+
+Example:
+
+```yaml
+name: self-host
+on:
+  - push
+jobs:
+  test:
+    runs-on: local
+    container: docker.io/library/rust:latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo test --all
+```
+
+## Systemd Integration
+
+`ci` does not need a daemon, but systemd can run it on a timer.
+
+`~/.config/systemd/user/my-project-ci.service`:
+
+```ini
+[Unit]
+Description=Run ci build for my-project
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Projects/my-project
+ExecStart=%h/.local/bin/ci --silent run build
+```
+
+`~/.config/systemd/user/my-project-ci.timer`:
+
+```ini
+[Unit]
+Description=Run ci build for my-project periodically
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+Enable it:
+
+```sh
+systemctl --user daemon-reload
+systemctl --user enable --now my-project-ci.timer
+```
+
+For a system service, use an absolute `WorkingDirectory` and an absolute `ExecStart` path.
+
+## Environment
+
+Workflow steps receive:
+
+- `CI=true`
+- `CI_TOOL=ci`
+- `CI_EVENT`
+- `CI_HOOK`
+- `CI_ARCH`
+- `CI_HOST_ARCH`
+- `CI_PLATFORM`
+- `CI_REPO`
+- `CI_GIT_DIR`
+- `CI_WORKFLOW`
+- `CI_WORKFLOW_PATH`
+- `CI_WORKFLOW_DIR`
+- `CI_RUN_ID`
+- `CI_PROVIDER`
+- `CI_HOOK_ARGS`
+- `CI_BRANCH` when available
+
+GitHub/Gitea compatibility variables such as `GITHUB_ACTIONS`, `GITHUB_REF`, `GITHUB_REF_NAME`, `GITEA_REF`, and `GITEA_REF_NAME` are also populated when applicable.
+
+Use expression syntax in YAML inputs:
+
+```yaml
+to: ~/.local/bin/ci.${{ env.CI_ARCH }}
+```
+
+Use shell syntax inside `run:`:
+
+```yaml
+run: echo "$CI_ARCH"
+```
 
 ## Install modes
 
@@ -307,6 +552,8 @@ mkdir -p ~/.local/share/man/man1
 ci man --dir ~/.local/share/man/man1
 ```
 
+`ci man --dir` writes `ci.1` and one page per subcommand.
+
 ## Remove
 
 ```sh
@@ -366,8 +613,26 @@ Build outputs can also be copied during a workflow:
 ```yaml
 steps:
   - use: export
-    src: target/release/ci
-    if: exists(src)
-    dest: dist/ci
+    if: exists(from)
+    from: target/release/ci
+    to: dist/ci
     replace: true
+```
+
+## Troubleshooting
+
+Inspect discovery and matching:
+
+```sh
+ci list
+ci explain build
+ci explain pre-push
+ci status
+```
+
+Use `--verbose` for command traces and `--silent` for hooks or timers:
+
+```sh
+ci --verbose build
+ci --silent run --event pre-push build
 ```

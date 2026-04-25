@@ -70,6 +70,252 @@ fn write_man_tree(command: clap::Command, page_name: &str, dir: &Path) -> Result
 }
 
 fn render_man(command: clap::Command, page_name: &str, output: &mut dyn Write) -> Result<()> {
-    Man::new(command).title(page_name).render(output)?;
+    Man::new(command).title(page_name).render(&mut *output)?;
+    if let Some(extra) = man_extra(page_name) {
+        output.write_all(extra.as_bytes())?;
+    }
     Ok(())
+}
+
+fn man_extra(page_name: &str) -> Option<&'static str> {
+    match page_name {
+        "ci" => Some(
+            r#"
+.SH OVERVIEW
+ci discovers workflows from .ci, .github/workflows, and .gitea/workflows.
+Native workflows may be YAML files, executable files, or Containerfile/Dockerfile workflows.
+If no workflow exists, ci can auto-detect a basic build workflow for common stacks.
+.SH FILES
+.TP
+.B .ci/config.yml
+Project settings and defaults.
+.TP
+.B .ci/*.yml
+Native YAML workflows.
+.TP
+.B .ci/**/workflow.yml
+Metadata for directory workflows.
+.TP
+.B .ci/**/Containerfile
+Container build workflow.
+.TP
+.B .github/workflows/*.yml
+GitHub Actions style workflows.
+.TP
+.B .gitea/workflows/*.yml
+Gitea Actions style workflows.
+.SH EXAMPLES
+.EX
+ci list
+ci build
+ci run --event pre-push build
+ci run --arch x64,arm64 --tech rust build
+ci install --mode link --hooks pre-commit,pre-push
+ci man --dir ~/.local/share/man/man1
+.EE
+.SH NATIVE WORKFLOW EXAMPLE
+.EX
+name: build
+on:
+  - manual
+  - pre-push
+tech: rust
+container:
+  arch: [x64, arm64]
+  components: [cargo-fmt, cargo-clippy]
+steps:
+  - run: cargo fmt --check
+  - run: cargo test --all
+  - run: cargo build --release
+  - use: export
+    if: arch(host) and exists(from)
+    container: false
+    from: target/release/ci
+    to: ~/.local/bin/ci.${{ env.CI_ARCH }}
+    replace: true
+.EE
+.SH SETTINGS EXAMPLE
+.EX
+silent: true
+tech: rust
+arch: [x64, arm64]
+container:
+  packages: [htop]
+  components: [cargo-fmt, cargo-clippy]
+branches:
+  allow: [main, develop]
+.EE
+.SH CONTAINERFILE EXAMPLE
+.EX
+# .ci/image/Containerfile
+FROM docker.io/library/rust:latest
+WORKDIR /work
+COPY . .
+RUN cargo test --all
+RUN cargo build --release
+.EE
+.SH SYSTEMD USER SERVICE EXAMPLE
+.EX
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Projects/my-project
+ExecStart=%h/.local/bin/ci --silent run build
+.EE
+"#,
+        ),
+        "ci-run" => Some(
+            r#"
+.SH EXAMPLES
+.EX
+ci run
+ci run build
+ci build
+ci run --all
+ci run --event pre-push build
+ci run --arch x64,arm64 build
+ci run --tech node build
+ci run --container build
+ci run --no-container build
+.EE
+.SH NOTES
+Unknown top-level commands are treated as workflow names, so ci build is equivalent to ci run build.
+Use --container to force native workflows into containers, and --no-container to run them on the host.
+"#,
+        ),
+        "ci-list" => Some(
+            r#"
+.SH EXAMPLES
+.EX
+ci list
+ci list --porcelain
+ci list | cut -f1
+.EE
+.SH OUTPUT
+Porcelain output is tab-separated: name, provider, kind, and path.
+"#,
+        ),
+        "ci-install" => Some(
+            r#"
+.SH EXAMPLES
+.EX
+ci install --mode link --hooks pre-commit,pre-push
+ci install --mode copy --hooks pre-push
+ci install --backup-existing
+.EE
+.SH NOTES
+Link mode creates architecture-specific runners such as .git/ci/run.x64.
+Copy mode copies the current ci binary into the repository.
+"#,
+        ),
+        "ci-uninstall" => Some(
+            r#"
+.SH EXAMPLES
+.EX
+ci uninstall
+ci uninstall --restore
+ci uninstall --keep-binary
+.EE
+.SH NOTES
+Only hooks containing the managed-by: ci marker are removed automatically.
+"#,
+        ),
+        "ci-update" => Some(
+            r#"
+.SH EXAMPLES
+.EX
+ci update
+ci update --source ./target/release/ci
+.EE
+.SH NOTES
+For link installs this refreshes links. For copy installs this copies the current or selected binary again.
+"#,
+        ),
+        "ci-hook" => Some(
+            r#"
+.SH EXAMPLES
+.EX
+ci hook pre-commit
+ci hook pre-push origin git@example.com:repo.git
+.EE
+.SH NOTES
+Installed Git hooks call ci hook <hook-name> "$@".
+"#,
+        ),
+        "ci-status" => Some(
+            r#"
+.SH EXAMPLES
+.EX
+ci status
+ci doctor
+.EE
+.SH NOTES
+Reports repository, config, hook, container runtime, Git, Node, and artifact state.
+"#,
+        ),
+        "ci-explain" => Some(
+            r#"
+.SH EXAMPLES
+.EX
+ci explain build
+ci explain pre-push
+.EE
+.SH NOTES
+Use explain when a workflow did not run and you need to see event, branch, and selection reasons.
+"#,
+        ),
+        "ci-clean" => Some(
+            r#"
+.SH EXAMPLES
+.EX
+ci clean
+ci clean build
+ci clean --mode move --dest ./ci-artifacts
+ci clean --run-id 123 --dry-run
+.EE
+.SH NOTES
+Exports or keeps recorded artifacts from .git/ci artifacts and run manifests.
+"#,
+        ),
+        "ci-init" => Some(
+            r#"
+.SH EXAMPLES
+.EX
+ci init
+ci init --force
+.EE
+.SH NOTES
+Creates .ci/build.yml. Existing files are kept unless --force is used.
+"#,
+        ),
+        "ci-completion" => Some(
+            r#"
+.SH EXAMPLES
+.EX
+ci completion bash
+ci completion bash --output ~/.local/share/bash-completion/completions/ci
+.EE
+"#,
+        ),
+        "ci-man" => Some(
+            r#"
+.SH EXAMPLES
+.EX
+ci man
+ci man --dir ./target/man
+ci man --dir ~/.local/share/man/man1
+.EE
+.SH NOTES
+When --dir is set, ci writes ci.1 and one page per subcommand.
+"#,
+        ),
+        "ci-self" => Some(
+            r#"
+.SH EXAMPLES
+.EX
+ci self
+.EE
+"#,
+        ),
+        _ => None,
+    }
 }
