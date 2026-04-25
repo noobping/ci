@@ -1,0 +1,108 @@
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+
+pub fn make_fake_podman(dir: &Path) -> PathBuf {
+    let bin_dir = dir.join("bin");
+    fs::create_dir_all(&bin_dir).expect("create fake bin dir");
+    let log = dir.join("podman.log");
+    let podman = bin_dir.join("podman");
+    fs::write(
+        &podman,
+        format!(
+            r#"#!/bin/sh
+set -eu
+log={}
+printf '%s\n' "$*" >> "$log"
+
+if [ "$#" -gt 0 ] && [ "$1" = "build" ]; then
+  exit 0
+fi
+
+if [ "$#" -gt 0 ] && [ "$1" = "run" ]; then
+  shift
+  repo=
+  workdir=/work
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --rm|--network)
+        if [ "$1" = "--network" ]; then shift; fi
+        shift
+        ;;
+      -v)
+        mount=$2
+        case "$mount" in
+          *:/work|*:/work:z)
+            repo=${{mount%%:/work*}}
+            ;;
+        esac
+        shift 2
+        ;;
+      -w)
+        workdir=$2
+        shift 2
+        ;;
+      -e)
+        export "$2"
+        shift 2
+        ;;
+      --platform|--entrypoint|--name)
+        shift 2
+        ;;
+      -d)
+        exit 0
+        ;;
+      *)
+        image=$1
+        shift
+        break
+        ;;
+    esac
+  done
+
+  if [ -n "${{repo:-}}" ]; then
+    case "$workdir" in
+      /work) cd "$repo" ;;
+      /work/*) cd "$repo/${{workdir#/work/}}" ;;
+    esac
+  fi
+
+  if [ "$#" -ge 3 ] && [ "$2" = "-c" ]; then
+    exec "$1" -c "$3"
+  fi
+  exec "$@"
+fi
+
+if [ "$#" -gt 0 ] && [ "$1" = "rm" ]; then
+  exit 0
+fi
+
+exit 0
+"#,
+            shell_quote(&log)
+        ),
+    )
+    .expect("write fake podman");
+    let mut permissions = fs::metadata(&podman)
+        .expect("fake podman metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&podman, permissions).expect("make fake podman executable");
+    bin_dir
+}
+
+pub fn path_with_fake_bin(fake_bin: &Path) -> String {
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths = vec![fake_bin.to_path_buf()];
+    paths.extend(std::env::split_paths(&current));
+    std::env::join_paths(paths)
+        .expect("join PATH")
+        .to_string_lossy()
+        .to_string()
+}
+
+fn shell_quote(path: &Path) -> String {
+    let value = path.as_os_str().to_string_lossy();
+    let escaped = value.replace('\'', "'\\''");
+    format!("'{escaped}'")
+}

@@ -1,0 +1,272 @@
+use serde_json::json;
+
+pub(crate) fn all_schema() -> serde_json::Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$defs": {
+            "config": config_schema(),
+            "workflow": workflow_schema()
+        }
+    })
+}
+
+pub(crate) fn config_schema() -> serde_json::Value {
+    let defaults = defaults_schema();
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "ci config",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "defaults": defaults,
+            "hooks": {
+                "type": "object",
+                "additionalProperties": workflow_override_schema()
+            },
+            "workflows": {
+                "type": "object",
+                "additionalProperties": workflow_override_schema()
+            },
+            "actions": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "node_image": { "type": "string" },
+                    "node-image": { "type": "string" }
+                }
+            },
+            "shell": { "type": "string" },
+            "quiet": { "type": "boolean" },
+            "silent": { "type": "boolean" },
+            "fail_fast": { "type": "boolean" },
+            "fail-fast": { "type": "boolean" },
+            "tech": tech_schema(),
+            "type": tech_schema(),
+            "tech-stack": tech_schema(),
+            "tech_stack": tech_schema(),
+            "arch": arch_schema(),
+            "container": container_schema(),
+            "container_runtime": runtime_schema(),
+            "container-runtime": runtime_schema(),
+            "git_mode": { "enum": ["host", "auto", "alias"] },
+            "git-mode": { "enum": ["host", "auto", "alias"] },
+            "git_image": { "type": "string" },
+            "git-image": { "type": "string" },
+            "recursive_checkout": { "type": "boolean" },
+            "recursive-checkout": { "type": "boolean" },
+            "artifact_store": { "type": "string" },
+            "artifact-store": { "type": "string" },
+            "actions_cache": { "type": "string" },
+            "actions-cache": { "type": "string" },
+            "branches": branches_schema()
+        }
+    })
+}
+
+pub(crate) fn workflow_schema() -> serde_json::Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "ci native workflow",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "name": { "type": "string" },
+            "defaults": workflow_override_schema(),
+            "on": event_schema(),
+            "tech": tech_schema(),
+            "type": tech_schema(),
+            "tech-stack": tech_schema(),
+            "tech_stack": tech_schema(),
+            "arch": arch_schema(),
+            "branches": branches_schema(),
+            "artifacts": artifacts_schema(),
+            "execution": execution_schema(),
+            "container": container_schema(),
+            "env": string_map_schema(),
+            "steps": {
+                "type": "array",
+                "items": native_step_schema()
+            }
+        }
+    })
+}
+
+fn defaults_schema() -> serde_json::Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "shell": { "type": "string" },
+            "quiet": { "type": "boolean" },
+            "silent": { "type": "boolean" },
+            "fail_fast": { "type": "boolean" },
+            "fail-fast": { "type": "boolean" },
+            "tech": tech_schema(),
+            "type": tech_schema(),
+            "tech-stack": tech_schema(),
+            "tech_stack": tech_schema(),
+            "arch": arch_schema(),
+            "container": container_schema(),
+            "container_runtime": runtime_schema(),
+            "container-runtime": runtime_schema(),
+            "git_mode": { "enum": ["host", "auto", "alias"] },
+            "git-mode": { "enum": ["host", "auto", "alias"] },
+            "git_image": { "type": "string" },
+            "git-image": { "type": "string" },
+            "recursive_checkout": { "type": "boolean" },
+            "recursive-checkout": { "type": "boolean" },
+            "artifact_store": { "type": "string" },
+            "artifact-store": { "type": "string" },
+            "actions_cache": { "type": "string" },
+            "actions-cache": { "type": "string" },
+            "branches": branches_schema()
+        }
+    })
+}
+
+fn workflow_override_schema() -> serde_json::Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "on": event_schema(),
+            "tech": tech_schema(),
+            "type": tech_schema(),
+            "tech-stack": tech_schema(),
+            "tech_stack": tech_schema(),
+            "arch": arch_schema(),
+            "branches": branches_schema(),
+            "artifacts": artifacts_schema(),
+            "execution": execution_schema(),
+            "container": container_schema(),
+            "env": string_map_schema()
+        }
+    })
+}
+
+fn native_step_schema() -> serde_json::Value {
+    json!({
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+            "name": { "type": "string" },
+            "run": { "type": "string" },
+            "use": { "type": "string" },
+            "uses": { "type": "string" },
+            "container": { "type": "boolean" },
+            "shell": { "type": "string" },
+            "env": string_map_schema(),
+            "with": { "type": "object" },
+            "if": { "type": "string" },
+            "working-directory": { "type": "string" },
+            "continue-on-error": { "type": "boolean" },
+            "timeout-minutes": { "type": "integer", "minimum": 1 }
+        }
+    })
+}
+
+fn container_schema() -> serde_json::Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "type": tech_schema(),
+            "image": { "type": "string" },
+            "platform": { "type": "string" },
+            "workdir": { "type": "string" },
+            "working-directory": { "type": "string" },
+            "working_directory": { "type": "string" },
+            "arch": arch_schema(),
+            "packages": string_array_schema(),
+            "components": string_array_schema(),
+            "env": string_map_schema(),
+            "volumes": string_array_schema()
+        }
+    })
+}
+
+fn branches_schema() -> serde_json::Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "allow": string_array_schema(),
+            "only": string_array_schema()
+        }
+    })
+}
+
+fn artifacts_schema() -> serde_json::Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "paths": string_array_schema(),
+            "mode": { "enum": ["keep", "move"] },
+            "destination": { "type": "string" }
+        }
+    })
+}
+
+fn execution_schema() -> serde_json::Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "workspace": { "type": "string" },
+            "shell": { "type": "string" }
+        }
+    })
+}
+
+fn event_schema() -> serde_json::Value {
+    json!({
+        "oneOf": [
+            { "type": "string" },
+            string_array_schema()
+        ]
+    })
+}
+
+fn arch_schema() -> serde_json::Value {
+    json!({
+        "oneOf": [
+            { "type": "string" },
+            string_array_schema()
+        ]
+    })
+}
+
+fn tech_schema() -> serde_json::Value {
+    json!({
+        "enum": [
+            "auto",
+            "general",
+            "rust",
+            "node",
+            "go",
+            "python",
+            "maven",
+            "gradle",
+            "dotnet"
+        ]
+    })
+}
+
+fn runtime_schema() -> serde_json::Value {
+    json!({ "enum": ["auto", "podman", "docker"] })
+}
+
+fn string_array_schema() -> serde_json::Value {
+    json!({
+        "type": "array",
+        "items": { "type": "string" }
+    })
+}
+
+fn string_map_schema() -> serde_json::Value {
+    json!({
+        "type": "object",
+        "additionalProperties": { "type": "string" }
+    })
+}

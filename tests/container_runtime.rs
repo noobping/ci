@@ -1,0 +1,150 @@
+mod common;
+
+use tempfile::TempDir;
+
+use common::assertions::{assert_failure, assert_success, output, stderr};
+use common::fake_podman::{make_fake_podman, path_with_fake_bin};
+use common::repo::TestRepo;
+
+#[test]
+fn native_container_run_uses_platform_env_volumes_and_cache_mounts() {
+    let repo = TestRepo::new();
+    let fake = TempDir::new().expect("fake podman dir");
+    let fake_bin = make_fake_podman(fake.path());
+    repo.write(
+        ".ci/build.yml",
+        r#"
+on: [manual]
+tech: rust
+container:
+  image: localhost/fake-rust
+  arch: arm64
+  env:
+    FROM_CONTAINER: yes
+  volumes:
+    - /tmp:/tmp/ci-extra
+steps:
+  - name: container step
+    run: printf "$FROM_CONTAINER" > container.txt
+  - name: host step
+    container: false
+    run: printf host > host.txt
+"#,
+    );
+
+    let mut command = repo.ci();
+    command.env("PATH", path_with_fake_bin(&fake_bin)).args([
+        "run",
+        "--container-runtime",
+        "podman",
+        "build",
+    ]);
+    assert_success(output(command));
+
+    assert_eq!(repo.read("container.txt"), "yes");
+    assert_eq!(repo.read("host.txt"), "host");
+    let log = std::fs::read_to_string(fake.path().join("podman.log")).expect("read podman log");
+    assert!(log.contains("--platform linux/arm64"));
+    assert!(log.contains("-e FROM_CONTAINER=yes"));
+    assert!(log.contains("/tmp:/tmp/ci-extra"));
+    assert!(log.contains("/usr/local/cargo/registry"));
+    assert!(log.contains("/usr/local/cargo/git"));
+}
+
+#[test]
+fn native_container_builds_generated_image_for_packages_and_components() {
+    let repo = TestRepo::new();
+    let fake = TempDir::new().expect("fake podman dir");
+    let fake_bin = make_fake_podman(fake.path());
+    repo.write(
+        ".ci/build.yml",
+        r#"
+on: [manual]
+tech: rust
+container:
+  arch: x64
+  packages: [pkg-config]
+  components: [cargo-fmt, cargo-clippy]
+steps:
+  - run: printf built > built.txt
+"#,
+    );
+
+    let mut command = repo.ci();
+    command.env("PATH", path_with_fake_bin(&fake_bin)).args([
+        "run",
+        "--container-runtime",
+        "podman",
+        "build",
+    ]);
+    assert_success(output(command));
+
+    assert_eq!(repo.read("built.txt"), "built");
+    let log = std::fs::read_to_string(fake.path().join("podman.log")).expect("read podman log");
+    assert!(log.contains("build --platform linux/amd64"));
+    assert!(log.contains("localhost/ci-build-linux-amd64:latest"));
+
+    let generated = repo
+        .path()
+        .join(".git/ci/containers/ci-build-linux-amd64.Containerfile");
+    let generated = std::fs::read_to_string(generated).expect("read generated Containerfile");
+    assert!(generated.contains("FROM docker.io/library/rust:latest"));
+    assert!(generated.contains("rustup component add 'rustfmt' 'clippy'"));
+    assert!(generated.contains("pkg-config"));
+}
+
+#[test]
+fn container_components_are_rejected_for_non_rust_stacks() {
+    let repo = TestRepo::new();
+    let fake = TempDir::new().expect("fake podman dir");
+    let fake_bin = make_fake_podman(fake.path());
+    repo.write(
+        ".ci/build.yml",
+        r#"
+on: [manual]
+tech: node
+container:
+  components: [cargo-fmt]
+steps:
+  - run: npm run build
+"#,
+    );
+
+    let mut command = repo.ci();
+    command.env("PATH", path_with_fake_bin(&fake_bin)).args([
+        "run",
+        "--container-runtime",
+        "podman",
+        "build",
+    ]);
+    let output = assert_failure(output(command), 2);
+
+    assert!(stderr(&output).contains("container.components is only supported for Rust containers"));
+}
+
+#[test]
+fn no_container_override_runs_configured_container_workflow_on_host() {
+    let repo = TestRepo::new();
+    let fake = TempDir::new().expect("fake podman dir");
+    let fake_bin = make_fake_podman(fake.path());
+    repo.write(
+        ".ci/build.yml",
+        r#"
+on: [manual]
+tech: rust
+container:
+  image: localhost/fake-rust
+steps:
+  - run: printf host > host-only.txt
+"#,
+    );
+
+    let mut command = repo.ci();
+    command
+        .env("PATH", path_with_fake_bin(&fake_bin))
+        .args(["run", "--no-container", "build"]);
+    assert_success(output(command));
+
+    assert_eq!(repo.read("host-only.txt"), "host");
+    assert!(!fake.path().join("podman.log").exists());
+}

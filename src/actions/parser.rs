@@ -1,101 +1,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::Deserialize;
 use serde_yaml::Value;
 
+use crate::actions::{
+    ActionContainer, ActionEvent, ActionRunStep, ActionService, ActionStep, ActionUsesStep,
+    ActionsJob, ActionsProvider, ActionsWorkflow, RunDefaults,
+};
 use crate::error::{CiError, Result};
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ActionsProvider {
-    GitHub,
-    Gitea,
-}
-
-#[derive(Clone, Debug)]
-pub struct ActionsWorkflow {
-    pub name: String,
-    pub path: PathBuf,
-    pub provider: ActionsProvider,
-    pub events: Vec<ActionEvent>,
-    pub env: BTreeMap<String, String>,
-    pub defaults: RunDefaults,
-    pub jobs: Vec<ActionsJob>,
-}
-
-#[derive(Clone, Debug)]
-pub struct ActionEvent {
-    pub name: String,
-    pub branches: Vec<String>,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct RunDefaults {
-    pub shell: Option<String>,
-    pub working_directory: Option<String>,
-}
-
-#[derive(Clone, Debug)]
-pub struct ActionsJob {
-    pub id: String,
-    pub name: String,
-    pub needs: Vec<String>,
-    pub if_condition: Option<String>,
-    pub env: BTreeMap<String, String>,
-    pub defaults: RunDefaults,
-    pub matrix: Vec<BTreeMap<String, String>>,
-    pub container: Option<ActionContainer>,
-    pub services: BTreeMap<String, ActionService>,
-    pub steps: Vec<ActionStep>,
-    pub continue_on_error: bool,
-    pub timeout_minutes: Option<u64>,
-}
-
-#[derive(Clone, Debug)]
-pub struct ActionContainer {
-    pub image: String,
-    pub env: BTreeMap<String, String>,
-    pub options: Option<String>,
-    pub ports: Vec<String>,
-}
-
-#[derive(Clone, Debug)]
-pub struct ActionService {
-    pub image: String,
-    pub env: BTreeMap<String, String>,
-    pub options: Option<String>,
-    pub ports: Vec<String>,
-}
-
-#[derive(Clone, Debug)]
-pub enum ActionStep {
-    Run(ActionRunStep),
-    Uses(ActionUsesStep),
-}
-
-#[derive(Clone, Debug)]
-pub struct ActionRunStep {
-    pub name: String,
-    pub run: String,
-    pub shell: Option<String>,
-    pub env: BTreeMap<String, String>,
-    pub if_condition: Option<String>,
-    pub working_directory: Option<String>,
-    pub continue_on_error: bool,
-    pub timeout_minutes: Option<u64>,
-}
-
-#[derive(Clone, Debug)]
-pub struct ActionUsesStep {
-    pub name: String,
-    pub uses: String,
-    pub with: BTreeMap<String, String>,
-    pub env: BTreeMap<String, String>,
-    pub if_condition: Option<String>,
-    pub working_directory: Option<String>,
-    pub continue_on_error: bool,
-}
 
 #[derive(Clone, Debug, Deserialize, Default)]
 struct RawActionsWorkflow {
@@ -247,46 +161,6 @@ impl RawContainer {
                 ports,
             },
         }
-    }
-}
-
-impl ActionsWorkflow {
-    pub fn provider_label(&self) -> &'static str {
-        match self.provider {
-            ActionsProvider::GitHub => "github",
-            ActionsProvider::Gitea => "gitea",
-        }
-    }
-
-    pub fn remote_base(&self) -> &'static str {
-        match self.provider {
-            ActionsProvider::GitHub => "https://github.com",
-            ActionsProvider::Gitea => "https://gitea.com",
-        }
-    }
-
-    pub fn matches_event(&self, events: &[String], branch: Option<&str>) -> Option<String> {
-        for canonical in events {
-            for action_event in &self.events {
-                if action_event.name == *canonical {
-                    if !action_event.branches.is_empty() {
-                        if let Some(branch) = branch {
-                            if !action_event.branches.iter().any(|item| item == branch) {
-                                continue;
-                            }
-                        } else {
-                            continue;
-                        }
-                    }
-                    return Some(format!(
-                        "{} declares `{}`",
-                        self.path.display(),
-                        action_event.name
-                    ));
-                }
-            }
-        }
-        None
     }
 }
 
@@ -618,48 +492,5 @@ fn scalar_to_string(value: &Value) -> Option<String> {
         Value::Number(value) => Some(value.to_string()),
         Value::Bool(value) => Some(value.to_string()),
         _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::fs;
-
-    use super::{load_actions_workflow, ActionStep, ActionsProvider};
-
-    #[test]
-    fn workflow_and_job_permissions_are_ignored() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let path = temp.path().join("permissions.yml");
-        fs::write(
-            &path,
-            r#"
-name: permissions
-on: push
-permissions:
-  contents: read
-jobs:
-  build:
-    continue-on-error: "${{ matrix.stream.name == 'next' }}"
-    permissions:
-      packages: write
-    steps:
-      - run: echo ok
-        continue-on-error: "${{ false }}"
-"#,
-        )
-        .expect("write workflow");
-
-        let workflow =
-            load_actions_workflow(&path, ActionsProvider::GitHub).expect("load workflow");
-
-        assert_eq!(workflow.name, "permissions");
-        assert_eq!(workflow.jobs.len(), 1);
-        assert_eq!(workflow.jobs[0].id, "build");
-        assert!(!workflow.jobs[0].continue_on_error);
-        match &workflow.jobs[0].steps[0] {
-            ActionStep::Run(step) => assert!(!step.continue_on_error),
-            _ => panic!("expected run step"),
-        }
     }
 }

@@ -15,6 +15,7 @@ pub mod output;
 pub mod repo;
 pub mod runner;
 pub mod schema;
+pub mod schema_definitions;
 pub mod status;
 pub mod workflow;
 
