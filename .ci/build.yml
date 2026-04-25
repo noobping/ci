@@ -33,12 +33,19 @@ steps:
 
   - name: install executable
     if: exists(src)
+    container: false
     use: export
     src: target/release/ci
     dest: ~/.local/bin/
     replace: true
 
   - name: install bash completion
-    run: ci completion bash > ~/.local/share/bash-completion/completions/ci
+    container: false
+    run: |
+      mkdir -p ~/.local/share/bash-completion/completions
+      ci completion bash > ~/.local/share/bash-completion/completions/ci
   - name: install manual
-    run: ci man --dir ~/.local/share/man/man1
+    container: false
+    run: |
+      mkdir -p ~/.local/share/man/man1
+      ci man --dir ~/.local/share/man/man1
