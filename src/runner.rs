@@ -1987,7 +1987,12 @@ fn run_clean_step(
         .map(|value| parse_bool(value))
         .unwrap_or(false)
     {
-        let status = run_shell(shell, "cargo clean", workdir, expr.env)?;
+        let command = if ctx.output.is_quiet_or_silent() {
+            "cargo clean --quiet"
+        } else {
+            "cargo clean"
+        };
+        let status = run_shell(shell, command, workdir, expr.env)?;
         if status != 0 {
             return Ok(status);
         }

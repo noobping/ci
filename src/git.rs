@@ -195,7 +195,11 @@ impl GitService {
     }
 
     fn run_git(&self, dir: &Path, args: &[&str]) -> Result<Output> {
-        let args = git_args_for_verbosity(args, self.output.is_verbose());
+        let args = git_args_for_verbosity(
+            args,
+            self.output.is_verbose(),
+            self.output.is_quiet_or_silent(),
+        );
         self.output.verbose(format!("git {}", args.join(" ")));
         match self.execution_mode() {
             ExecutionMode::Host => Command::new("git")
@@ -254,25 +258,55 @@ impl GitService {
     }
 }
 
-fn git_args_for_verbosity<'a>(args: &'a [&'a str], verbose: bool) -> Vec<&'a str> {
-    if !verbose || args.is_empty() || has_quiet_arg(args) || has_verbose_arg(args) {
+fn git_args_for_verbosity<'a>(args: &'a [&'a str], verbose: bool, quiet: bool) -> Vec<&'a str> {
+    if args.is_empty() || has_quiet_arg(args) || has_verbose_arg(args) {
         return args.to_vec();
     }
 
     let command = args[0];
-    let supports_verbose = matches!(
-        command,
-        "add" | "clone" | "fetch" | "pull" | "push" | "status"
-    );
-    if !supports_verbose {
-        return args.to_vec();
+
+    if verbose {
+        let supports_verbose = matches!(
+            command,
+            "add" | "clone" | "fetch" | "pull" | "push" | "status"
+        );
+        if !supports_verbose {
+            return args.to_vec();
+        }
+
+        let mut verbose_args = Vec::with_capacity(args.len() + 1);
+        verbose_args.push(command);
+        verbose_args.push("--verbose");
+        verbose_args.extend_from_slice(&args[1..]);
+        return verbose_args;
     }
 
-    let mut verbose_args = Vec::with_capacity(args.len() + 1);
-    verbose_args.push(command);
-    verbose_args.push("--verbose");
-    verbose_args.extend_from_slice(&args[1..]);
-    verbose_args
+    if quiet {
+        let supports_quiet = matches!(
+            command,
+            "checkout"
+                | "clean"
+                | "clone"
+                | "commit"
+                | "fetch"
+                | "pull"
+                | "push"
+                | "reset"
+                | "restore"
+                | "submodule"
+        );
+        if !supports_quiet {
+            return args.to_vec();
+        }
+
+        let mut quiet_args = Vec::with_capacity(args.len() + 1);
+        quiet_args.push(command);
+        quiet_args.push("--quiet");
+        quiet_args.extend_from_slice(&args[1..]);
+        return quiet_args;
+    }
+
+    args.to_vec()
 }
 
 fn has_quiet_arg(args: &[&str]) -> bool {
@@ -344,11 +378,11 @@ mod tests {
     #[test]
     fn verbose_git_args_adds_command_verbose_when_supported() {
         assert_eq!(
-            git_args_for_verbosity(&["clone", "--depth", "1", "repo"], true),
+            git_args_for_verbosity(&["clone", "--depth", "1", "repo"], true, false),
             vec!["clone", "--verbose", "--depth", "1", "repo"]
         );
         assert_eq!(
-            git_args_for_verbosity(&["push", "origin", "HEAD"], true),
+            git_args_for_verbosity(&["push", "origin", "HEAD"], true, false),
             vec!["push", "--verbose", "origin", "HEAD"]
         );
     }
@@ -356,16 +390,48 @@ mod tests {
     #[test]
     fn verbose_git_args_leaves_unsupported_or_quiet_commands_alone() {
         assert_eq!(
-            git_args_for_verbosity(&["rev-parse", "--abbrev-ref", "HEAD"], true),
+            git_args_for_verbosity(&["rev-parse", "--abbrev-ref", "HEAD"], true, false),
             vec!["rev-parse", "--abbrev-ref", "HEAD"]
         );
         assert_eq!(
-            git_args_for_verbosity(&["fetch", "--quiet", "origin"], true),
+            git_args_for_verbosity(&["fetch", "--quiet", "origin"], true, false),
             vec!["fetch", "--quiet", "origin"]
         );
         assert_eq!(
-            git_args_for_verbosity(&["status", "--verbose"], true),
+            git_args_for_verbosity(&["status", "--verbose"], true, false),
             vec!["status", "--verbose"]
+        );
+    }
+
+    #[test]
+    fn silent_git_args_adds_command_quiet_when_supported() {
+        assert_eq!(
+            git_args_for_verbosity(&["clone", "--depth", "1", "repo"], false, true),
+            vec!["clone", "--quiet", "--depth", "1", "repo"]
+        );
+        assert_eq!(
+            git_args_for_verbosity(&["fetch", "--all", "--prune"], false, true),
+            vec!["fetch", "--quiet", "--all", "--prune"]
+        );
+        assert_eq!(
+            git_args_for_verbosity(&["submodule", "update", "--init"], false, true),
+            vec!["submodule", "--quiet", "update", "--init"]
+        );
+    }
+
+    #[test]
+    fn silent_git_args_leaves_unsupported_or_verbose_commands_alone() {
+        assert_eq!(
+            git_args_for_verbosity(&["rev-parse", "--abbrev-ref", "HEAD"], false, true),
+            vec!["rev-parse", "--abbrev-ref", "HEAD"]
+        );
+        assert_eq!(
+            git_args_for_verbosity(&["fetch", "--verbose", "origin"], false, true),
+            vec!["fetch", "--verbose", "origin"]
+        );
+        assert_eq!(
+            git_args_for_verbosity(&["status", "--short"], false, true),
+            vec!["status", "--short"]
         );
     }
 }

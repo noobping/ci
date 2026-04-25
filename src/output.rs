@@ -51,6 +51,10 @@ impl Output {
         matches!(self.verbosity, Verbosity::Verbose(_))
     }
 
+    pub fn is_quiet_or_silent(&self) -> bool {
+        matches!(self.verbosity, Verbosity::Quiet | Verbosity::Silent)
+    }
+
     pub fn info(&self, message: impl AsRef<str>) {
         if !matches!(self.verbosity, Verbosity::Quiet | Verbosity::Silent) {
             tracing::info!("{}", message.as_ref());
