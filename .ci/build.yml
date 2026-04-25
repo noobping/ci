@@ -39,6 +39,12 @@ steps:
     dest: ~/.local/bin/ci.$CI_ARCH
     replace: true
 
+  - use: link
+    if: arch(x64)
+    src: ~/.local/bin/ci.$CI_ARCH
+    dest: ~/.local/bin/ci
+    replace: true
+
   - name: install bash completion
     container: false
     run: |
