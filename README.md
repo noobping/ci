@@ -109,6 +109,7 @@ Native `.ci/*.yml` steps also support first-class conditions:
 - `if: success` or `if: success()`: run when the current step path is still successful. This is the default when `if` is omitted.
 - `if: failure` or `if: failure()`: run after the previous executed step failed.
 - `if: always` or `if: always()`: run regardless of the previous step result.
+- `if: arch(x64)`: true when the selected execution architecture matches; aliases such as `amd64` and `linux/amd64` are normalized, and comma-separated values are accepted.
 - `if: exists(cargo)`: true when a repo-relative path exists, or when a bare command exists on `PATH`.
 - `if: exists(path:Cargo.toml)`: true when a repo-relative or absolute file/directory path exists.
 - `if: exists(file:Cargo.toml)` / `if: exists(dir:src)`: true only for files or directories.

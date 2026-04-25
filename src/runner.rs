@@ -2797,6 +2797,9 @@ fn evaluate_condition_with_probe(
         return condition_target_exists(&resolve_condition_target(target, ctx), ctx, command_probe)
             .map(|exists| !exists);
     }
+    if let Some(target) = function_arg(expr, "arch") {
+        return Ok(condition_arch_matches(target, ctx));
+    }
 
     if let Some(rest) = expr
         .strip_prefix("startsWith(")
@@ -2892,6 +2895,27 @@ fn word_operator_at(expr: &str, index: usize, word: &str) -> bool {
 
 fn is_condition_word_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-')
+}
+
+fn condition_arch_matches(target: &str, ctx: &ExpressionContext<'_>) -> bool {
+    let current = ctx
+        .env
+        .get("CI_ARCH")
+        .cloned()
+        .or_else(|| env::var("CI_ARCH").ok())
+        .unwrap_or_else(|| Architecture::host().to_string());
+    let Ok(current) = current.parse::<Architecture>() else {
+        return false;
+    };
+
+    parse_path_list(target).iter().any(|value| {
+        let value = trim_literal(value);
+        let value = resolve_expr_value(&value, ctx).unwrap_or(value);
+        value
+            .parse::<Architecture>()
+            .map(|arch| arch == current)
+            .unwrap_or(false)
+    })
 }
 
 fn interpolate_expressions(value: &str, ctx: &ExpressionContext<'_>) -> String {
@@ -3431,6 +3455,22 @@ mod tests {
         assert!(evaluate_condition(Some("success"), &succeeded));
         assert!(!evaluate_condition(Some("failure"), &succeeded));
         assert!(evaluate_condition(Some("!failure"), &succeeded));
+    }
+
+    #[test]
+    fn arch_conditions_match_selected_arch() {
+        let temp = TempDir::new().expect("tempdir");
+        let mut env = BTreeMap::new();
+        env.insert("CI_ARCH".to_string(), "x64".to_string());
+        env.insert("TARGET_ARCH".to_string(), "amd64".to_string());
+        let ctx = expr_ctx(temp.path(), &env, true, false);
+
+        assert!(evaluate_condition(Some("arch(x64)"), &ctx));
+        assert!(evaluate_condition(Some("arch(amd64)"), &ctx));
+        assert!(evaluate_condition(Some("arch(linux/amd64)"), &ctx));
+        assert!(evaluate_condition(Some("arch(arm64, x64)"), &ctx));
+        assert!(evaluate_condition(Some("arch(env.TARGET_ARCH)"), &ctx));
+        assert!(!evaluate_condition(Some("arch(arm64)"), &ctx));
     }
 
     #[test]
