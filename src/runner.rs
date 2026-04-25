@@ -2346,6 +2346,7 @@ fn workflow_env(
     env.insert("CI_EVENT".to_string(), invocation.event.clone());
     env.insert("CI_HOOK".to_string(), invocation.event.clone());
     env.insert("CI_ARCH".to_string(), invocation.arch.to_string());
+    env.insert("CI_HOST_ARCH".to_string(), Architecture::host().to_string());
     env.insert(
         "CI_PLATFORM".to_string(),
         container_platform(resolved, &invocation.arch),
@@ -3028,6 +3029,16 @@ fn condition_arch_matches(target: &str, ctx: &ExpressionContext<'_>) -> bool {
     parse_path_list(target).iter().any(|value| {
         let value = trim_literal(value);
         let value = resolve_expr_value(&value, ctx).unwrap_or(value);
+        if matches!(
+            value
+                .trim()
+                .to_ascii_lowercase()
+                .replace(['-', ' '], "_")
+                .as_str(),
+            "host" | "host_arch" | "native"
+        ) {
+            return Architecture::host() == current;
+        }
         value
             .parse::<Architecture>()
             .map(|arch| arch == current)
@@ -3450,7 +3461,7 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use crate::config::ContainerType;
+    use crate::config::{Architecture, ContainerType};
     use crate::git::CleanIgnoredMode;
     use crate::workflow::WorkflowSource;
 
@@ -3588,6 +3599,18 @@ mod tests {
         assert!(evaluate_condition(Some("arch(arm64, x64)"), &ctx));
         assert!(evaluate_condition(Some("arch(env.TARGET_ARCH)"), &ctx));
         assert!(!evaluate_condition(Some("arch(arm64)"), &ctx));
+
+        let mut host_env = BTreeMap::new();
+        let host_arch = Architecture::host().to_string();
+        host_env.insert("CI_ARCH".to_string(), host_arch.clone());
+        host_env.insert("CI_HOST_ARCH".to_string(), host_arch);
+        let host_ctx = expr_ctx(temp.path(), &host_env, true, false);
+        assert!(evaluate_condition(Some("arch(host)"), &host_ctx));
+        assert!(evaluate_condition(Some("arch(host arch)"), &host_ctx));
+        assert!(evaluate_condition(
+            Some("arch(env.CI_HOST_ARCH)"),
+            &host_ctx
+        ));
     }
 
     #[test]

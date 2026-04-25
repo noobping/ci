@@ -40,7 +40,7 @@ steps:
     replace: true
 
   - use: link
-    if: arch(x64)
+    if: arch(host)
     src: '~/.local/bin/ci.${{ env.CI_ARCH }}'
     dest: ~/.local/bin/ci
     replace: true
