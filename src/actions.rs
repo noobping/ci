@@ -107,7 +107,6 @@ struct RawActionsWorkflow {
     defaults: Option<RawDefaults>,
     #[serde(default)]
     jobs: BTreeMap<String, RawJob>,
-    permissions: Option<Value>,
     secrets: Option<Value>,
 }
 
@@ -140,11 +139,10 @@ struct RawJob {
     #[serde(default)]
     steps: Vec<RawStep>,
     #[serde(rename = "continue-on-error")]
-    continue_on_error: Option<bool>,
+    continue_on_error: Option<Value>,
     #[serde(rename = "timeout-minutes")]
     timeout_minutes: Option<u64>,
     uses: Option<String>,
-    permissions: Option<Value>,
     secrets: Option<Value>,
 }
 
@@ -191,7 +189,7 @@ struct RawStep {
     #[serde(rename = "working-directory")]
     working_directory: Option<String>,
     #[serde(rename = "continue-on-error")]
-    continue_on_error: Option<bool>,
+    continue_on_error: Option<Value>,
     #[serde(rename = "timeout-minutes")]
     timeout_minutes: Option<u64>,
 }
@@ -319,12 +317,6 @@ pub fn load_actions_workflow(path: &Path, provider: ActionsProvider) -> Result<A
 }
 
 fn reject_unsupported_workflow(path: &Path, raw: &RawActionsWorkflow) -> Result<()> {
-    if raw.permissions.is_some() {
-        return Err(CiError::Message(format!(
-            "{} uses `permissions`, which is not supported locally",
-            path.display()
-        )));
-    }
     if raw.secrets.is_some() {
         return Err(CiError::Message(format!(
             "{} uses `secrets`, which is not supported locally",
@@ -352,12 +344,6 @@ fn parse_jobs(path: &Path, raw: BTreeMap<String, RawJob>) -> Result<Vec<ActionsJ
         if job.uses.is_some() {
             return Err(CiError::Message(format!(
                 "{} job `{id}` uses reusable workflows (`jobs.<id>.uses`), which are not supported",
-                path.display()
-            )));
-        }
-        if job.permissions.is_some() {
-            return Err(CiError::Message(format!(
-                "{} job `{id}` uses `permissions`, which is not supported locally",
                 path.display()
             )));
         }
@@ -390,7 +376,7 @@ fn parse_jobs(path: &Path, raw: BTreeMap<String, RawJob>) -> Result<Vec<ActionsJ
                     env: stringify_map(step.env),
                     if_condition: step.if_condition,
                     working_directory: step.working_directory,
-                    continue_on_error: step.continue_on_error.unwrap_or(false),
+                    continue_on_error: continue_on_error_value(step.continue_on_error.as_ref()),
                     timeout_minutes: step.timeout_minutes,
                 }));
             } else if let Some(uses) = step.uses {
@@ -401,7 +387,7 @@ fn parse_jobs(path: &Path, raw: BTreeMap<String, RawJob>) -> Result<Vec<ActionsJ
                     env: stringify_map(step.env),
                     if_condition: step.if_condition,
                     working_directory: step.working_directory,
-                    continue_on_error: step.continue_on_error.unwrap_or(false),
+                    continue_on_error: continue_on_error_value(step.continue_on_error.as_ref()),
                 }));
             } else {
                 return Err(CiError::Message(format!(
@@ -431,12 +417,32 @@ fn parse_jobs(path: &Path, raw: BTreeMap<String, RawJob>) -> Result<Vec<ActionsJ
             container: job.container.map(RawContainer::into_container),
             services,
             steps,
-            continue_on_error: job.continue_on_error.unwrap_or(false),
+            continue_on_error: continue_on_error_value(job.continue_on_error.as_ref()),
             timeout_minutes: job.timeout_minutes,
         });
     }
 
     Ok(jobs)
+}
+
+fn continue_on_error_value(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::Bool(value)) => *value,
+        Some(Value::String(value)) => {
+            let value = trim_expression(value);
+            matches!(value, "1" | "true" | "yes" | "on")
+        }
+        _ => false,
+    }
+}
+
+fn trim_expression(value: &str) -> &str {
+    let value = value.trim();
+    value
+        .strip_prefix("${{")
+        .and_then(|value| value.strip_suffix("}}"))
+        .map(str::trim)
+        .unwrap_or(value)
 }
 
 fn expand_matrix(value: Option<&Value>) -> Result<Vec<BTreeMap<String, String>>> {
@@ -612,5 +618,48 @@ fn scalar_to_string(value: &Value) -> Option<String> {
         Value::Number(value) => Some(value.to_string()),
         Value::Bool(value) => Some(value.to_string()),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::{load_actions_workflow, ActionStep, ActionsProvider};
+
+    #[test]
+    fn workflow_and_job_permissions_are_ignored() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("permissions.yml");
+        fs::write(
+            &path,
+            r#"
+name: permissions
+on: push
+permissions:
+  contents: read
+jobs:
+  build:
+    continue-on-error: "${{ matrix.stream.name == 'next' }}"
+    permissions:
+      packages: write
+    steps:
+      - run: echo ok
+        continue-on-error: "${{ false }}"
+"#,
+        )
+        .expect("write workflow");
+
+        let workflow =
+            load_actions_workflow(&path, ActionsProvider::GitHub).expect("load workflow");
+
+        assert_eq!(workflow.name, "permissions");
+        assert_eq!(workflow.jobs.len(), 1);
+        assert_eq!(workflow.jobs[0].id, "build");
+        assert!(!workflow.jobs[0].continue_on_error);
+        match &workflow.jobs[0].steps[0] {
+            ActionStep::Run(step) => assert!(!step.continue_on_error),
+            _ => panic!("expected run step"),
+        }
     }
 }

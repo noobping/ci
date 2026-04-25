@@ -212,8 +212,6 @@ Built-in shims exist for:
 - `actions/upload-artifact`
 - `actions/download-artifact`
 
-Reusable workflows, hosted-runner-only permissions/secrets/OIDC flows, and other non-local features fail explicitly.
-
 ## Install modes
 
 ### Link mode
