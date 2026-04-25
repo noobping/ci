@@ -136,7 +136,8 @@ steps:
 .EE
 .SH SETTINGS EXAMPLE
 .EX
-silent: true
+quiet: true
+# silent: true
 tech: rust
 arch: [x64, arm64]
 container:

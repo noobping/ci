@@ -207,12 +207,12 @@ Optional config lives in:
 .ci/config.yml
 ```
 
-Supported defaults include shell, silent output, fail-fast, tech stack, architecture, container settings, container runtime, git mode/image, recursive checkout, default branch allowlist, artifact store, and actions cache.
+Supported defaults include shell, quiet/silent output, fail-fast, tech stack, architecture, container settings, container runtime, git mode/image, recursive checkout, default branch allowlist, artifact store, and actions cache.
 
 Example:
 
 ```yaml
-silent: true
+quiet: true
 fail_fast: true
 tech: rust
 arch:

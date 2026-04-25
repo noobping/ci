@@ -266,6 +266,7 @@ pub struct WorkflowOverride {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct DefaultsConfig {
     pub shell: Option<String>,
+    pub quiet: Option<bool>,
     pub silent: Option<bool>,
     pub fail_fast: Option<bool>,
     #[serde(
@@ -381,6 +382,7 @@ impl ArchFilter {
 #[derive(Clone, Debug)]
 pub struct Defaults {
     pub shell: String,
+    pub quiet: bool,
     pub silent: bool,
     pub fail_fast: bool,
     pub arch: Vec<Architecture>,
@@ -426,6 +428,7 @@ impl ResolvedConfig {
                 .shell
                 .clone()
                 .unwrap_or_else(|| "/bin/sh".to_string()),
+            quiet: file_defaults.quiet.unwrap_or(false),
             silent: file_defaults.silent.unwrap_or(false),
             fail_fast: file_defaults.fail_fast.unwrap_or(true),
             arch: selected_arches(&global.arch, &file_defaults.arch),
@@ -525,6 +528,7 @@ impl DefaultsConfig {
     pub fn merge(&self, other: &Self) -> Self {
         Self {
             shell: other.shell.clone().or_else(|| self.shell.clone()),
+            quiet: other.quiet.or(self.quiet),
             silent: other.silent.or(self.silent),
             fail_fast: other.fail_fast.or(self.fail_fast),
             tech_stack: other.tech_stack.or(self.tech_stack),
@@ -752,6 +756,22 @@ type: golang
             default_container_config(&defaults).kind,
             Some(ContainerType::Go)
         );
+    }
+
+    #[test]
+    fn quiet_default_merges_like_silent_default() {
+        let file: ConfigFile = serde_yaml::from_str(
+            r#"
+quiet: true
+defaults:
+  silent: true
+"#,
+        )
+        .expect("parse quiet and silent defaults");
+        let defaults = file.root_defaults.merge(&file.defaults);
+
+        assert_eq!(defaults.quiet, Some(true));
+        assert_eq!(defaults.silent, Some(true));
     }
 
     #[test]

@@ -30,11 +30,18 @@ impl Output {
     pub fn from_settings(global: &GlobalOptions, defaults: Option<&Defaults>) -> Self {
         init_tracing(global);
 
+        let defaults_quiet = defaults.map(|value| value.quiet).unwrap_or(false);
+        let defaults_silent = defaults.map(|value| value.silent).unwrap_or(false);
+
         let verbosity = if global.verbose > 0 {
             Verbosity::Verbose(global.verbose)
         } else if global.quiet {
             Verbosity::Quiet
-        } else if global.silent || defaults.map(|value| value.silent).unwrap_or(false) {
+        } else if global.silent {
+            Verbosity::Silent
+        } else if defaults_quiet {
+            Verbosity::Quiet
+        } else if defaults_silent {
             Verbosity::Silent
         } else {
             Verbosity::Normal
@@ -160,7 +167,7 @@ mod tests {
     #[test]
     fn config_can_enable_silent_by_default() {
         let global = globals();
-        let defaults = defaults(true);
+        let defaults = defaults(false, true);
 
         assert_eq!(
             Output::from_settings(&global, Some(&defaults)).verbosity(),
@@ -170,10 +177,33 @@ mod tests {
     }
 
     #[test]
+    fn config_can_enable_quiet_by_default() {
+        let global = globals();
+        let defaults = defaults(true, false);
+
+        assert_eq!(
+            Output::from_settings(&global, Some(&defaults)).verbosity(),
+            Verbosity::Quiet
+        );
+    }
+
+    #[test]
+    fn cli_silent_overrides_config_quiet() {
+        let mut global = globals();
+        global.silent = true;
+        let defaults = defaults(true, false);
+
+        assert_eq!(
+            Output::from_settings(&global, Some(&defaults)).verbosity(),
+            Verbosity::Silent
+        );
+    }
+
+    #[test]
     fn verbose_overrides_config_silent() {
         let mut global = globals();
         global.verbose = 1;
-        let defaults = defaults(true);
+        let defaults = defaults(false, true);
 
         assert_eq!(
             Output::from_settings(&global, Some(&defaults)).verbosity(),
@@ -181,9 +211,10 @@ mod tests {
         );
     }
 
-    fn defaults(silent: bool) -> Defaults {
+    fn defaults(quiet: bool, silent: bool) -> Defaults {
         Defaults {
             shell: "/bin/sh".to_string(),
+            quiet,
             silent,
             fail_fast: true,
             arch: vec![Architecture::host()],
