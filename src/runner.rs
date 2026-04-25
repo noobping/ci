@@ -600,7 +600,27 @@ fn run_native_yaml(
             },
             ..preliminary_expr
         };
-        if !evaluate_condition(step.if_condition.as_deref(), &expr) {
+        let should_run = if let Some(container) = container {
+            let command_probe = |name: &str| {
+                container.backend.command_exists(
+                    &ContainerCommandExistsSpec {
+                        image: &container.image,
+                        repo_root: &ctx.repo.root,
+                        env: &condition_env,
+                        platform: Some(&container.platform),
+                    },
+                    name,
+                )
+            };
+            evaluate_condition_with_probe(
+                step.if_condition.as_deref(),
+                &expr,
+                Some(&command_probe),
+            )?
+        } else {
+            evaluate_condition(step.if_condition.as_deref(), &expr)
+        };
+        if !should_run {
             ctx.output
                 .verbose(format!("skipping step `{step_name}` due to condition"));
             continue;
@@ -2286,6 +2306,13 @@ struct ContainerShellSpec<'a> {
     options: Option<&'a str>,
 }
 
+struct ContainerCommandExistsSpec<'a> {
+    image: &'a str,
+    repo_root: &'a Path,
+    env: &'a BTreeMap<String, String>,
+    platform: Option<&'a str>,
+}
+
 struct ContainerBackend {
     runtime: String,
 }
@@ -2371,6 +2398,38 @@ impl ContainerBackend {
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
         Ok(command.status()?.code().unwrap_or(1))
+    }
+
+    fn command_exists(&self, spec: &ContainerCommandExistsSpec<'_>, name: &str) -> Result<bool> {
+        let mount = format!("{}:/work", spec.repo_root.display());
+        let mut command = Command::new(&self.runtime);
+        command
+            .arg("run")
+            .arg("--rm")
+            .arg("--network")
+            .arg("host")
+            .arg("-v")
+            .arg(mount)
+            .arg("-w")
+            .arg("/work");
+        if let Some(platform) = spec.platform {
+            command.arg("--platform").arg(platform);
+        }
+        for (key, value) in spec.env {
+            command.arg("-e").arg(format!("{key}={value}"));
+        }
+        command
+            .arg(spec.image)
+            .arg("/bin/sh")
+            .arg("-c")
+            .arg(format!(
+                "command -v {} >/dev/null 2>&1",
+                sh_single_quote(name)
+            ))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        Ok(command.status()?.success())
     }
 
     fn run_action_container(
@@ -2577,39 +2636,60 @@ fn copy_recursively(source: &Path, target: &Path) -> Result<()> {
     }
 }
 
+type ConditionCommandProbe<'a> = dyn Fn(&str) -> Result<bool> + 'a;
+
 fn evaluate_condition(expr: Option<&str>, ctx: &ExpressionContext<'_>) -> bool {
+    evaluate_condition_with_probe(expr, ctx, None).unwrap_or(false)
+}
+
+fn evaluate_condition_with_probe(
+    expr: Option<&str>,
+    ctx: &ExpressionContext<'_>,
+    command_probe: Option<&ConditionCommandProbe<'_>>,
+) -> Result<bool> {
     let Some(expr) = expr else {
-        return ctx.success;
+        return Ok(ctx.success);
     };
     let expr = trim_expr(expr);
 
     if expr.contains("||") {
-        return expr
-            .split("||")
-            .any(|part| evaluate_condition(Some(part), ctx));
+        for part in expr.split("||") {
+            if evaluate_condition_with_probe(Some(part), ctx, command_probe)? {
+                return Ok(true);
+            }
+        }
+        return Ok(false);
     }
     if expr.contains("&&") {
-        return expr
-            .split("&&")
-            .all(|part| evaluate_condition(Some(part), ctx));
+        for part in expr.split("&&") {
+            if !evaluate_condition_with_probe(Some(part), ctx, command_probe)? {
+                return Ok(false);
+            }
+        }
+        return Ok(true);
     }
     if let Some(rest) = expr.strip_prefix('!') {
-        return !evaluate_condition(Some(rest), ctx);
+        return Ok(!evaluate_condition_with_probe(
+            Some(rest),
+            ctx,
+            command_probe,
+        )?);
     }
 
     match expr {
-        "true" | "always" | "always()" => return true,
-        "false" | "cancelled" | "cancelled()" => return false,
-        "success" | "success()" => return ctx.success,
-        "failure" | "failure()" => return ctx.previous_failed,
+        "true" | "always" | "always()" => return Ok(true),
+        "false" | "cancelled" | "cancelled()" => return Ok(false),
+        "success" | "success()" => return Ok(ctx.success),
+        "failure" | "failure()" => return Ok(ctx.previous_failed),
         _ => {}
     }
 
     if let Some(target) = function_arg(expr, "exists") {
-        return condition_target_exists(&resolve_condition_target(target, ctx), ctx);
+        return condition_target_exists(&resolve_condition_target(target, ctx), ctx, command_probe);
     }
     if let Some(target) = function_arg(expr, "missing") {
-        return !condition_target_exists(&resolve_condition_target(target, ctx), ctx);
+        return condition_target_exists(&resolve_condition_target(target, ctx), ctx, command_probe)
+            .map(|exists| !exists);
     }
 
     if let Some(rest) = expr
@@ -2624,25 +2704,25 @@ fn evaluate_condition(expr: Option<&str>, ctx: &ExpressionContext<'_>) -> bool {
             .trim()
             .trim_matches('\'')
             .trim_matches('"');
-        return resolve_expr_value(left, ctx)
+        return Ok(resolve_expr_value(left, ctx)
             .map(|value| value.starts_with(right))
-            .unwrap_or(false);
+            .unwrap_or(false));
     }
 
     if let Some((left, right)) = expr.split_once("==") {
-        return resolve_expr_value(left.trim(), ctx)
+        return Ok(resolve_expr_value(left.trim(), ctx)
             .map(|value| value == trim_literal(right))
-            .unwrap_or(false);
+            .unwrap_or(false));
     }
     if let Some((left, right)) = expr.split_once("!=") {
-        return resolve_expr_value(left.trim(), ctx)
+        return Ok(resolve_expr_value(left.trim(), ctx)
             .map(|value| value != trim_literal(right))
-            .unwrap_or(false);
+            .unwrap_or(false));
     }
 
-    resolve_expr_value(expr, ctx)
+    Ok(resolve_expr_value(expr, ctx)
         .map(|value| !value.is_empty() && value != "false")
-        .unwrap_or(false)
+        .unwrap_or(false))
 }
 
 fn interpolate_expressions(value: &str, ctx: &ExpressionContext<'_>) -> String {
@@ -2732,11 +2812,15 @@ fn function_arg<'a>(expr: &'a str, name: &str) -> Option<&'a str> {
         .map(str::trim)
 }
 
-fn condition_target_exists(target: &ConditionTarget, ctx: &ExpressionContext<'_>) -> bool {
+fn condition_target_exists(
+    target: &ConditionTarget,
+    ctx: &ExpressionContext<'_>,
+    command_probe: Option<&ConditionCommandProbe<'_>>,
+) -> Result<bool> {
     match target {
-        ConditionTarget::Generic(value) => target_exists(value, ctx.root),
-        ConditionTarget::Path(value) => path_target_exists(value, ctx.root),
-        ConditionTarget::Env(name) => env_target_exists(name, ctx.env),
+        ConditionTarget::Generic(value) => target_exists(value, ctx.root, command_probe),
+        ConditionTarget::Path(value) => Ok(path_target_exists(value, ctx.root)),
+        ConditionTarget::Env(name) => Ok(env_target_exists(name, ctx.env)),
     }
 }
 
@@ -2755,20 +2839,32 @@ fn executable_exists(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn target_exists(name: &str, root: &Path) -> bool {
+fn target_exists(
+    name: &str,
+    root: &Path,
+    command_probe: Option<&ConditionCommandProbe<'_>>,
+) -> Result<bool> {
     if name.is_empty() {
-        return false;
+        return Ok(false);
     }
 
     let candidate = Path::new(name);
     if candidate.is_absolute() {
-        return filesystem_entry_exists(candidate);
+        return Ok(filesystem_entry_exists(candidate));
     }
     if candidate.components().count() > 1 || name.starts_with('.') {
-        return filesystem_entry_exists(&root.join(candidate));
+        return Ok(filesystem_entry_exists(&root.join(candidate)));
     }
 
-    filesystem_entry_exists(&root.join(candidate)) || executable_exists(name)
+    if filesystem_entry_exists(&root.join(candidate)) {
+        return Ok(true);
+    }
+
+    if let Some(command_probe) = command_probe {
+        return command_probe(name);
+    }
+
+    Ok(executable_exists(name))
 }
 
 fn path_target_exists(name: &str, root: &Path) -> bool {
@@ -2981,9 +3077,10 @@ mod tests {
     use crate::git::CleanIgnoredMode;
 
     use super::{
-        evaluate_condition, executable_exists, generated_native_container_image_name,
-        generated_native_containerfile, normalized_rust_components, parse_cleanup_ignored_mode,
-        parse_path_list, run_export_step, ExpressionContext,
+        evaluate_condition, evaluate_condition_with_probe, executable_exists,
+        generated_native_container_image_name, generated_native_containerfile,
+        normalized_rust_components, parse_cleanup_ignored_mode, parse_path_list, run_export_step,
+        ExpressionContext,
     };
 
     fn expr_ctx<'a>(
@@ -3101,6 +3198,34 @@ mod tests {
             &ctx
         ));
         assert!(evaluate_condition(Some("missing(dist)"), &ctx));
+    }
+
+    #[test]
+    fn exists_conditions_can_probe_container_commands() {
+        let temp = TempDir::new().expect("tempdir");
+        let env = BTreeMap::new();
+        let ctx = expr_ctx(temp.path(), &env, true, false);
+        let probe =
+            |name: &str| -> crate::error::Result<bool> { Ok(name == "definitely-ci-probe-tool") };
+
+        assert!(evaluate_condition_with_probe(
+            Some("exists(definitely-ci-probe-tool)"),
+            &ctx,
+            Some(&probe)
+        )
+        .expect("evaluate exists"));
+        assert!(!evaluate_condition_with_probe(
+            Some("missing(definitely-ci-probe-tool)"),
+            &ctx,
+            Some(&probe)
+        )
+        .expect("evaluate missing"));
+        assert!(evaluate_condition_with_probe(
+            Some("missing(definitely-ci-probe-tool-missing)"),
+            &ctx,
+            Some(&probe)
+        )
+        .expect("evaluate absent"));
     }
 
     #[test]
