@@ -163,6 +163,8 @@ pub struct WorkflowMatch {
 #[derive(Clone, Debug, Deserialize, Default)]
 struct NativeWorkflowFile {
     name: Option<String>,
+    #[serde(default)]
+    defaults: WorkflowOverride,
     #[serde(default, rename = "on")]
     on: EventFilter,
     #[serde(default)]
@@ -250,7 +252,7 @@ impl RawNativeStep {
 
 impl NativeWorkflowFile {
     fn metadata(&self) -> WorkflowOverride {
-        WorkflowOverride {
+        let local = WorkflowOverride {
             on: self.on.clone(),
             arch: self.arch.clone(),
             branches: self.branches.clone(),
@@ -258,7 +260,8 @@ impl NativeWorkflowFile {
             execution: self.execution.clone(),
             container: self.container.clone(),
             env: self.env.clone(),
-        }
+        };
+        self.defaults.merge(&local)
     }
 }
 
@@ -896,5 +899,37 @@ steps:
             .collect::<Vec<_>>();
 
         assert_eq!(arch, vec!["x64", "arm64"]);
+    }
+
+    #[test]
+    fn native_workflow_defaults_merge_under_direct_fields() {
+        let file: NativeWorkflowFile = serde_yaml::from_str(
+            r#"
+defaults:
+  container:
+    type: rust
+    arch: amd64
+    components:
+      - cargo-fmt
+container:
+  arch: aarch64
+steps:
+  - run: echo ok
+"#,
+        )
+        .expect("parse workflow");
+        let metadata = file.metadata();
+
+        assert_eq!(
+            metadata
+                .container
+                .arch
+                .to_vec()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            vec!["arm64"]
+        );
+        assert_eq!(metadata.container.components, vec!["cargo-fmt"]);
     }
 }

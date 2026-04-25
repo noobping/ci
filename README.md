@@ -75,19 +75,20 @@ YAML-ish workflow files:
 
 ```yaml
 name: build
+defaults:
+  container:
+    type: rust
+    arch:
+      - x64
+      - arm64
+    components:
+      - cargo-fmt
+      - cargo-clippy
+    packages:
+      - htop
 on:
   - manual
   - pre-push
-container:
-  type: rust
-  arch:
-    - x64
-    - arm64
-  components:
-    - cargo-fmt
-    - cargo-clippy
-  packages:
-    - htop
 steps:
   - name: Checkout
     uses: checkout
@@ -202,21 +203,22 @@ Supported defaults include shell, silent output, fail-fast, architecture, contai
 Example:
 
 ```yaml
-defaults:
-  silent: true
-  container:
-    type: rust
-    arch:
-      - x64
-      - arm64
-    components:
-      - cargo-fmt
-      - cargo-clippy
-    packages:
-      - htop
+silent: true
+container:
+  type: rust
+  arch:
+    - x64
+    - arm64
+  components:
+    - cargo-fmt
+    - cargo-clippy
+  packages:
+    - htop
 ```
 
-`--arch` accepts comma-separated values and can be repeated, so `--arch x64,arm64` and `--arch x64 --arch arm64` are equivalent. `defaults.arch` accepts either one value or a YAML list and is also used as the default `defaults.container.arch` when the container arch list is omitted. Architecture is an execution setting. Native YAML workflows can run inside a generated container with `defaults.container` or workflow-level `container`; workflow-level settings override the defaults. `container.type: rust` uses the official Rust image, while omitted/`auto` detects Rust projects and otherwise uses a general Debian image. Rust containers support `components`, installed with `rustup component add`; `cargo-fmt` maps to `rustfmt` and `cargo-clippy` maps to `clippy`. When a container workflow, native container workflow, or action does not set `container.platform`, `ci` maps the selected arch to a podman/docker platform such as `linux/amd64` or `linux/arm64`.
+In `.ci/config.yml`, default fields can be written directly at the top level; wrapping them in `defaults:` is still accepted. In workflow files, `defaults:` can set workflow defaults such as `container`, `execution`, `branches`, `artifacts`, and `env`; direct workflow fields override those defaults.
+
+`--arch` accepts comma-separated values and can be repeated, so `--arch x64,arm64` and `--arch x64 --arch arm64` are equivalent. `arch` accepts either one value or a YAML list and is also used as the default `container.arch` when the container arch list is omitted. Architecture is an execution setting. Native YAML workflows can run inside a generated container with config-level `container`, workflow `defaults.container`, or workflow-level `container`; workflow-level settings override the defaults. `container.type: rust` uses the official Rust image, while omitted/`auto` detects Rust projects and otherwise uses a general Debian image. Rust containers support `components`, installed with `rustup component add`; `cargo-fmt` maps to `rustfmt` and `cargo-clippy` maps to `clippy`. When a container workflow, native container workflow, or action does not set `container.platform`, `ci` maps the selected arch to a podman/docker platform such as `linux/amd64` or `linux/arm64`.
 
 ## Actions compatibility
 

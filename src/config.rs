@@ -248,6 +248,9 @@ pub struct DefaultsConfig {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ConfigFile {
+    #[serde(flatten)]
+    pub root_defaults: DefaultsConfig,
+
     #[serde(default)]
     pub defaults: DefaultsConfig,
 
@@ -370,45 +373,43 @@ impl ResolvedConfig {
             ConfigFile::default()
         };
 
+        let file_defaults = file.root_defaults.merge(&file.defaults);
+
         let defaults = Defaults {
-            shell: file
-                .defaults
+            shell: file_defaults
                 .shell
                 .clone()
                 .unwrap_or_else(|| "/bin/sh".to_string()),
-            silent: file.defaults.silent.unwrap_or(false),
-            fail_fast: file.defaults.fail_fast.unwrap_or(true),
-            arch: selected_arches(&global.arch, &file.defaults.arch),
-            container: default_container_config(&file.defaults),
-            container_runtime: file
-                .defaults
+            silent: file_defaults.silent.unwrap_or(false),
+            fail_fast: file_defaults.fail_fast.unwrap_or(true),
+            arch: selected_arches(&global.arch, &file_defaults.arch),
+            container: default_container_config(&file_defaults),
+            container_runtime: file_defaults
                 .container_runtime
                 .unwrap_or(ContainerRuntime::Auto),
             git_mode: global
                 .git_mode
-                .or(file.defaults.git_mode)
+                .or(file_defaults.git_mode)
                 .unwrap_or(GitMode::Auto),
             git_image: global
                 .git_image
                 .clone()
-                .or_else(|| file.defaults.git_image.clone())
+                .or_else(|| file_defaults.git_image.clone())
                 .unwrap_or_else(|| DEFAULT_GIT_IMAGE.to_string()),
-            recursive_checkout: file.defaults.recursive_checkout.unwrap_or(true),
-            branch_allow: if file.defaults.branches.allow.is_empty() {
+            recursive_checkout: file_defaults.recursive_checkout.unwrap_or(true),
+            branch_allow: if file_defaults.branches.allow.is_empty() {
                 DEFAULT_BRANCHES
                     .iter()
                     .map(|item| (*item).to_string())
                     .collect()
             } else {
-                file.defaults.branches.allow.clone()
+                file_defaults.branches.allow.clone()
             },
-            artifact_store: file
-                .defaults
+            artifact_store: file_defaults
                 .artifact_store
                 .clone()
                 .unwrap_or_else(|| PathBuf::from("artifacts")),
-            actions_cache: file
-                .defaults
+            actions_cache: file_defaults
                 .actions_cache
                 .clone()
                 .unwrap_or_else(|| PathBuf::from("actions-cache")),
@@ -468,6 +469,31 @@ pub fn format_arches(arches: &[Architecture]) -> String {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(",")
+}
+
+impl DefaultsConfig {
+    pub fn merge(&self, other: &Self) -> Self {
+        Self {
+            shell: other.shell.clone().or_else(|| self.shell.clone()),
+            silent: other.silent.or(self.silent),
+            fail_fast: other.fail_fast.or(self.fail_fast),
+            arch: self.arch.merged(&other.arch),
+            container: self.container.merge(&other.container),
+            container_runtime: other.container_runtime.or(self.container_runtime),
+            git_mode: other.git_mode.or(self.git_mode),
+            git_image: other.git_image.clone().or_else(|| self.git_image.clone()),
+            recursive_checkout: other.recursive_checkout.or(self.recursive_checkout),
+            artifact_store: other
+                .artifact_store
+                .clone()
+                .or_else(|| self.artifact_store.clone()),
+            actions_cache: other
+                .actions_cache
+                .clone()
+                .or_else(|| self.actions_cache.clone()),
+            branches: self.branches.merge(&other.branches),
+        }
+    }
 }
 
 impl WorkflowOverride {
@@ -670,6 +696,62 @@ defaults:
                 .map(ToString::to_string)
                 .collect::<Vec<_>>(),
             vec!["x64", "arm64"]
+        );
+    }
+
+    #[test]
+    fn config_file_accepts_default_fields_at_root() {
+        let file: ConfigFile = serde_yaml::from_str(
+            r#"
+container:
+  type: rust
+  arch:
+    - amd64
+    - aarch64
+  components:
+    - cargo-fmt
+"#,
+        )
+        .expect("parse root defaults");
+        let defaults = file.root_defaults.merge(&file.defaults);
+
+        assert_eq!(defaults.container.kind, Some(ContainerType::Rust));
+        assert_eq!(
+            defaults
+                .container
+                .arch
+                .to_vec()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            vec!["x64", "arm64"]
+        );
+        assert_eq!(defaults.container.components, vec!["cargo-fmt"]);
+    }
+
+    #[test]
+    fn explicit_defaults_override_root_default_shorthand() {
+        let file: ConfigFile = serde_yaml::from_str(
+            r#"
+container:
+  arch: amd64
+defaults:
+  container:
+    arch: aarch64
+"#,
+        )
+        .expect("parse mixed defaults");
+        let defaults = file.root_defaults.merge(&file.defaults);
+
+        assert_eq!(
+            defaults
+                .container
+                .arch
+                .to_vec()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            vec!["arm64"]
         );
     }
 
