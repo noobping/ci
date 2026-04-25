@@ -36,7 +36,7 @@ steps:
     container: false
     use: export
     src: target/release/ci
-    dest: ~/.local/bin/
+    dest: ~/.local/bin/ci.$CI_ARCH
     replace: true
 
   - name: install bash completion
