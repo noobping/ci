@@ -88,6 +88,7 @@ struct RunRequest {
     arches: Vec<Architecture>,
     arch_overridden: bool,
     container_runtime: ContainerRuntime,
+    container_override: ContainerOverride,
     respect_branches: bool,
     recursive_checkout: bool,
     lock: bool,
@@ -100,6 +101,7 @@ struct RunInvocation {
     event: String,
     arch: Architecture,
     container_runtime: ContainerRuntime,
+    container_override: ContainerOverride,
     hook_args: Vec<String>,
     branch: Option<String>,
 }
@@ -110,9 +112,27 @@ impl RunRequest {
             event: self.event.clone(),
             arch,
             container_runtime: self.container_runtime,
+            container_override: self.container_override,
             hook_args: self.hook_args.clone(),
             branch: self.branch.clone(),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ContainerOverride {
+    Auto,
+    Force,
+    Disable,
+}
+
+fn container_override(global: &GlobalOptions) -> ContainerOverride {
+    if global.no_container {
+        ContainerOverride::Disable
+    } else if global.container {
+        ContainerOverride::Force
+    } else {
+        ContainerOverride::Auto
     }
 }
 
@@ -267,6 +287,7 @@ pub fn cmd_run(ctx: &AppContext, args: &RunArgs) -> Result<i32> {
         container_runtime: args
             .container_runtime
             .unwrap_or(ctx.config.defaults.container_runtime),
+        container_override: container_override(&ctx.global),
         respect_branches: args.respect_branches,
         recursive_checkout: !args.no_recursive_checkout && ctx.config.defaults.recursive_checkout,
         lock: args.lock,
@@ -291,6 +312,7 @@ pub fn cmd_hook(ctx: &AppContext, args: &HookArgs) -> Result<i32> {
         arches: ctx.config.defaults.arch.clone(),
         arch_overridden: !ctx.global.arch.is_empty(),
         container_runtime: ctx.config.defaults.container_runtime,
+        container_override: container_override(&ctx.global),
         respect_branches: true,
         recursive_checkout: ctx.config.defaults.recursive_checkout,
         lock: true,
@@ -391,7 +413,9 @@ fn execute_run(ctx: &AppContext, request: RunRequest) -> Result<i32> {
 
     for item in matches {
         let arches = workflow_execution_arches(&request, &item.resolved);
-        let show_arch = arches.len() > 1 || !item.resolved.container.arch.is_empty();
+        let show_arch = arches.len() > 1
+            || (request.container_override != ContainerOverride::Disable
+                && !item.resolved.container.arch.is_empty());
         for arch in arches {
             if show_arch {
                 ctx.output
@@ -419,7 +443,7 @@ fn workflow_execution_arches(
     request: &RunRequest,
     resolved: &ResolvedWorkflow,
 ) -> Vec<Architecture> {
-    if !request.arch_overridden {
+    if request.container_override != ContainerOverride::Disable && !request.arch_overridden {
         let container_arch = resolved.container.arch.to_vec();
         if !container_arch.is_empty() {
             return container_arch;
@@ -441,7 +465,7 @@ fn run_one_workflow(
             run_executable(ctx, invocation, &item.resolved, &base_env)?
         }
         WorkflowSource::NativeYaml(native) => {
-            if native_container_enabled(&item.resolved) {
+            if native_container_enabled(&item.resolved, invocation.container_override) {
                 run_native_yaml_containerized(
                     ctx,
                     invocation,
@@ -463,6 +487,12 @@ fn run_one_workflow(
             }
         }
         WorkflowSource::Container(_) => {
+            if invocation.container_override == ContainerOverride::Disable {
+                return Err(CiError::Usage(format!(
+                    "{} is a container workflow and cannot run with --no-container",
+                    item.workflow.path.display()
+                )));
+            }
             run_container_workflow(ctx, invocation, &item.resolved, &base_env)?
         }
         WorkflowSource::Actions(actions) => run_actions_workflow(
@@ -682,13 +712,19 @@ fn run_native_yaml(
     Ok(workflow_failure)
 }
 
-fn native_container_enabled(resolved: &ResolvedWorkflow) -> bool {
-    resolved.container.kind.is_some()
-        || resolved.container.image.is_some()
-        || resolved.container.platform.is_some()
-        || !resolved.container.arch.is_empty()
-        || !resolved.container.packages.is_empty()
-        || !resolved.container.components.is_empty()
+fn native_container_enabled(resolved: &ResolvedWorkflow, override_mode: ContainerOverride) -> bool {
+    match override_mode {
+        ContainerOverride::Force => true,
+        ContainerOverride::Disable => false,
+        ContainerOverride::Auto => {
+            resolved.container.kind.is_some()
+                || resolved.container.image.is_some()
+                || resolved.container.platform.is_some()
+                || !resolved.container.arch.is_empty()
+                || !resolved.container.packages.is_empty()
+                || !resolved.container.components.is_empty()
+        }
+    }
 }
 
 fn prepare_native_container_image(

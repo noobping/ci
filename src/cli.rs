@@ -48,6 +48,24 @@ pub struct GlobalOptions {
     #[arg(long = "git-image", global = true)]
     pub git_image: Option<String>,
 
+    #[arg(
+        short = 'c',
+        long = "container",
+        global = true,
+        conflicts_with = "no_container",
+        help = "Force native workflows to run steps in a container"
+    )]
+    pub container: bool,
+
+    #[arg(
+        short = 'C',
+        long = "no-container",
+        global = true,
+        conflicts_with = "container",
+        help = "Disable configured containers for native workflows"
+    )]
+    pub no_container: bool,
+
     #[arg(long = "arch", global = true, value_delimiter = ',')]
     pub arch: Vec<Architecture>,
 }
@@ -430,6 +448,21 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["x64", "arm64", "x64"]
         );
+    }
+
+    #[test]
+    fn container_flags_are_global_and_conflict() {
+        let forced = Cli::try_parse_from(rewrite(["ci", "-c", "build"])).expect("parse");
+        assert!(forced.global.container);
+        assert!(!forced.global.no_container);
+        assert!(matches!(forced.command, Commands::Run(_)));
+
+        let disabled = Cli::try_parse_from(rewrite(["ci", "build", "-C"])).expect("parse");
+        assert!(!disabled.global.container);
+        assert!(disabled.global.no_container);
+        assert!(matches!(disabled.command, Commands::Run(_)));
+
+        assert!(Cli::try_parse_from(rewrite(["ci", "-c", "-C", "build"])).is_err());
     }
 
     fn rewrite<const N: usize>(argv: [&str; N]) -> Vec<OsString> {

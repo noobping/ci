@@ -133,6 +133,8 @@ mod tests {
             color: ColorWhen::Never,
             git_mode: None,
             git_image: None,
+            container: false,
+            no_container: false,
             arch: Vec::new(),
         }
     }
