@@ -194,19 +194,23 @@ Optional config lives in:
 .ci/config.yml
 ```
 
-Supported defaults include shell, silent output, fail-fast, architecture, container runtime, git mode/image, recursive checkout, default branch allowlist, artifact store, and actions cache.
+Supported defaults include shell, silent output, fail-fast, architecture, container settings, container runtime, git mode/image, recursive checkout, default branch allowlist, artifact store, and actions cache.
 
 Example:
 
 ```yaml
 defaults:
   silent: true
-  arch:
-    - x64
-    - arm64
+  container:
+    type: rust
+    arch:
+      - x64
+      - arm64
+    packages:
+      - htop
 ```
 
-`--arch` accepts comma-separated values and can be repeated, so `--arch x64,arm64` and `--arch x64 --arch arm64` are equivalent. `defaults.arch` accepts either one value or a YAML list. Architecture is an execution setting. Native YAML workflows can run inside a generated container with `container.type`, `container.arch`, and `container.packages`. `container.type: rust` uses the official Rust image, while omitted/`auto` detects Rust projects and otherwise uses a general Debian image. When a container workflow, native container workflow, or action does not set `container.platform`, `ci` maps the selected arch to a podman/docker platform such as `linux/amd64` or `linux/arm64`.
+`--arch` accepts comma-separated values and can be repeated, so `--arch x64,arm64` and `--arch x64 --arch arm64` are equivalent. `defaults.arch` accepts either one value or a YAML list and is also used as the default `defaults.container.arch` when the container arch list is omitted. Architecture is an execution setting. Native YAML workflows can run inside a generated container with `defaults.container` or workflow-level `container`; workflow-level settings override the defaults. `container.type: rust` uses the official Rust image, while omitted/`auto` detects Rust projects and otherwise uses a general Debian image. When a container workflow, native container workflow, or action does not set `container.platform`, `ci` maps the selected arch to a podman/docker platform such as `linux/amd64` or `linux/arm64`.
 
 ## Actions compatibility
 

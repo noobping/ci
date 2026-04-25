@@ -339,7 +339,7 @@ pub fn resolve_workflow(
         branches: merged.branches,
         artifacts: merged.artifacts,
         execution: merged.execution,
-        container: merged.container,
+        container: config.defaults.container.merge(&merged.container),
         env: merged.env,
     }
 }

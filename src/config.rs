@@ -231,6 +231,8 @@ pub struct DefaultsConfig {
     pub fail_fast: Option<bool>,
     #[serde(default)]
     pub arch: ArchFilter,
+    #[serde(default)]
+    pub container: ContainerConfig,
     pub container_runtime: Option<ContainerRuntime>,
     pub git_mode: Option<GitMode>,
     pub git_image: Option<String>,
@@ -332,6 +334,7 @@ pub struct Defaults {
     pub silent: bool,
     pub fail_fast: bool,
     pub arch: Vec<Architecture>,
+    pub container: ContainerConfig,
     pub container_runtime: ContainerRuntime,
     pub git_mode: GitMode,
     pub git_image: String,
@@ -374,6 +377,7 @@ impl ResolvedConfig {
             silent: file.defaults.silent.unwrap_or(false),
             fail_fast: file.defaults.fail_fast.unwrap_or(true),
             arch: selected_arches(&global.arch, &file.defaults.arch),
+            container: default_container_config(&file.defaults),
             container_runtime: file
                 .defaults
                 .container_runtime
@@ -443,6 +447,14 @@ fn selected_arches(global: &[Architecture], configured: &ArchFilter) -> Vec<Arch
     } else {
         configured
     }
+}
+
+fn default_container_config(defaults: &DefaultsConfig) -> ContainerConfig {
+    let mut container = defaults.container.clone();
+    if container.arch.is_empty() && !defaults.arch.is_empty() {
+        container.arch = defaults.arch.clone();
+    }
+    container
 }
 
 pub fn format_arches(arches: &[Architecture]) -> String {
@@ -554,7 +566,7 @@ pub fn path_relative_to(base: &Path, path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{ConfigFile, ContainerType};
+    use super::{default_container_config, ConfigFile, ContainerType};
 
     #[test]
     fn defaults_arch_accepts_single_value_or_list() {
@@ -625,5 +637,53 @@ workflows:
             vec!["x64", "arm64"]
         );
         assert_eq!(container.packages, vec!["htop"]);
+    }
+
+    #[test]
+    fn defaults_arch_becomes_default_container_arch() {
+        let file: ConfigFile = serde_yaml::from_str(
+            r#"
+defaults:
+  arch:
+    - amd64
+    - aarch64
+"#,
+        )
+        .expect("parse defaults");
+        let container = default_container_config(&file.defaults);
+
+        assert_eq!(
+            container
+                .arch
+                .to_vec()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            vec!["x64", "arm64"]
+        );
+    }
+
+    #[test]
+    fn defaults_container_arch_overrides_defaults_arch_for_containers() {
+        let file: ConfigFile = serde_yaml::from_str(
+            r#"
+defaults:
+  arch: amd64
+  container:
+    arch: aarch64
+"#,
+        )
+        .expect("parse defaults");
+        let container = default_container_config(&file.defaults);
+
+        assert_eq!(
+            container
+                .arch
+                .to_vec()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            vec!["arm64"]
+        );
     }
 }
