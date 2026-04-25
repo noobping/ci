@@ -109,23 +109,37 @@ steps:
     run: flatpak-spawn --host toolbox run cargo build --release
 ```
 
-Native `.ci/*.yml` steps can also use built-in `uses:` values:
+Native `.ci/*.yml` steps can also use built-in `uses:` or `use:` action sources. `name:` is only the display name, so built-ins can still have custom labels.
 
 - `checkout`: restore tracked files to `HEAD`, with optional `with.submodules: true|recursive`
 - `submodules`: force `git submodule update --init --recursive`
 - `cache`: restore and save cache paths using `with.key` and `with.path`
 - `upload-artifact`: store artifacts using `with.name` and `with.path`
 - `download-artifact`: restore artifacts using `with.name` and optional `with.path`
+- `export`: copy `source`/`src` paths to `destination`/`dest`; multiple sources use the destination as a directory, while a single source can use an exact file path
+- `commit`: stage paths and create a commit with `message`/`msg`
+- `sync`: pull and push the current branch, or use `mirror: true` with `source`/`src` and `destination`/`dest` remotes
 - `clean`: run `git clean -fd` by default; `ignored: true` maps to `git clean -fdx`, `ignored: only` maps to `git clean -fdX`, `purge: true` runs `git fetch --all --prune`, `cargo: true` runs `cargo clean`, `path` or `paths` removes repo-relative targets, and native `.ci/*.yml` steps may extend the cleanup with an inline `run:` block
-- `cleanup`: compatibility alias for the previous targeted cleanup behavior
+
+`export` handles files and build outputs. `commit` and `sync` are separate repository actions.
 
 ```yaml
 steps:
-  - uses: checkout
-  - uses: clean
-  - uses: clean
+  - use: checkout
+  - name: Clean ignored build outputs
+    use: clean
+  - use: clean
     ignored: only
-  - uses: clean
+  - use: export
+    src:
+      - target/release/ci
+      - README.md
+    dest: dist
+  - use: commit
+    message: "ci: update generated outputs"
+  - use: sync
+    strategy: rebase
+  - use: clean
     purge: true
     cargo: true
     run: |
@@ -310,4 +324,13 @@ Artifacts can later be exported with:
 
 ```sh
 ci clean --mode move --dest ./ci-artifacts
+```
+
+Build outputs can also be copied during a workflow:
+
+```yaml
+steps:
+  - use: export
+    src: target/release/ci
+    dest: dist/ci
 ```

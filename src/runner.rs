@@ -9,6 +9,7 @@ use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fs2::FileExt;
+use glob::glob;
 use serde::Deserialize;
 
 use crate::actions::{
@@ -147,6 +148,30 @@ struct BuiltinStepState<'a> {
     artifacts: &'a mut ArtifactSession,
     cache_state: &'a mut CacheState,
 }
+
+const EXPORT_ACTION_NAMES: &[&str] = &[
+    "export",
+    "ci/export",
+    "artifact",
+    "ci/artifact",
+    "artifacts",
+    "ci/artifacts",
+    "release",
+    "ci/release",
+    "releases",
+    "ci/releases",
+    "result",
+    "ci/result",
+    "results",
+    "ci/results",
+    "res",
+    "ci/res",
+    "install",
+    "ci/install",
+];
+
+const COMMIT_ACTION_NAMES: &[&str] = &["commit", "ci/commit"];
+const SYNC_ACTION_NAMES: &[&str] = &["sync", "ci/sync"];
 
 pub fn cmd_list(ctx: &AppContext, args: &ListArgs) -> Result<i32> {
     let porcelain = args.use_porcelain(std::io::stdout().is_terminal());
@@ -490,7 +515,7 @@ fn run_native_yaml(
             )?
         } else {
             return Err(CiError::Message(format!(
-                "{} native step is missing `run` and `uses`",
+                "{} native step is missing `run` and `use`",
                 resolved.path.display()
             )));
         };
@@ -514,7 +539,7 @@ fn run_native_uses_step(
 ) -> Result<i32> {
     let uses = step.uses.as_deref().ok_or_else(|| {
         CiError::Message(format!(
-            "{} native step is missing `uses`",
+            "{} native action step is missing `use`",
             resolved.path.display()
         ))
     })?;
@@ -547,7 +572,7 @@ fn run_native_uses_step(
     };
     run_builtin_step(ctx, &invocation, &mut state)?.ok_or_else(|| {
         CiError::Message(format!(
-            "{} uses unsupported native built-in `{uses}`",
+            "{} uses unsupported native action source `{uses}`",
             resolved.path.display()
         ))
     })
@@ -998,6 +1023,13 @@ fn run_builtin_step(
                 .download_named_artifact(&name, &dest, false)?;
             Ok(Some(0))
         }
+        name if EXPORT_ACTION_NAMES.contains(&name) => {
+            Ok(Some(run_export_step(invocation.expr.root, &rendered_with)?))
+        }
+        name if COMMIT_ACTION_NAMES.contains(&name) => {
+            Ok(Some(run_commit_step(ctx, &rendered_with)?))
+        }
+        name if SYNC_ACTION_NAMES.contains(&name) => Ok(Some(run_sync_step(ctx, &rendered_with)?)),
         "clean" | "ci/clean" => Ok(Some(run_clean_step(
             ctx,
             invocation.expr.root,
@@ -1262,6 +1294,290 @@ fn run_clean_step(
     }
 
     Ok(0)
+}
+
+fn run_export_step(root: &Path, rendered_with: &BTreeMap<String, String>) -> Result<i32> {
+    let source = input_value(
+        rendered_with,
+        &["source", "sources", "src", "srcs", "path", "paths"],
+    )
+    .ok_or_else(|| CiError::Message("export requires `source` or `src`".to_string()))?;
+    let destination = input_value(
+        rendered_with,
+        &["destination", "destenation", "dest", "dst", "target"],
+    )
+    .ok_or_else(|| CiError::Message("export requires `destination` or `dest`".to_string()))?;
+
+    let specs = parse_path_list(source);
+    if specs.is_empty() {
+        return Err(CiError::Message(
+            "export requires at least one source path".to_string(),
+        ));
+    }
+
+    let sources = expand_export_sources(root, &specs)?;
+    let destination_path = resolve_export_path(root, destination);
+    for source in &sources {
+        let target = export_target_path(source, &destination_path, destination, sources.len())?;
+        copy_recursively(source, &target)?;
+    }
+    Ok(0)
+}
+
+fn run_commit_step(ctx: &AppContext, rendered_with: &BTreeMap<String, String>) -> Result<i32> {
+    let paths = input_value(
+        rendered_with,
+        &["path", "paths", "source", "sources", "src", "srcs"],
+    )
+    .map(parse_path_list)
+    .unwrap_or_default();
+    let staged_only = input_bool(
+        rendered_with,
+        &["staged", "staged-only", "staged_only"],
+        false,
+    );
+    let add_all = input_bool(rendered_with, &["all"], paths.is_empty() && !staged_only);
+
+    if !staged_only {
+        let mut args = vec!["add".to_string()];
+        if add_all {
+            args.push("-A".to_string());
+        } else if !paths.is_empty() {
+            args.push("--".to_string());
+            args.extend(paths);
+        }
+
+        if args.len() > 1 {
+            let status = git_status(ctx, &args)?;
+            if status != 0 {
+                return Ok(status);
+            }
+        }
+    }
+
+    let allow_empty = input_bool(
+        rendered_with,
+        &["allow-empty", "allow_empty", "empty"],
+        false,
+    );
+    if !allow_empty {
+        let status = ctx
+            .git
+            .status_in_dir(&ctx.repo.root, &["diff", "--cached", "--quiet"])?;
+        if status == 0 {
+            ctx.output.info("No changes to commit.");
+            return Ok(0);
+        }
+    }
+
+    let message = input_value(rendered_with, &["message", "msg", "summary"])
+        .unwrap_or("ci: automated changes");
+    let mut args = vec!["commit".to_string(), "-m".to_string(), message.to_string()];
+    if allow_empty {
+        args.push("--allow-empty".to_string());
+    }
+    if input_bool(rendered_with, &["signoff", "sign-off", "signed-off"], false) {
+        args.push("--signoff".to_string());
+    }
+    if let Some(author) = input_value(rendered_with, &["author"]) {
+        args.push("--author".to_string());
+        args.push(author.to_string());
+    }
+
+    git_status(ctx, &args)
+}
+
+fn run_sync_step(ctx: &AppContext, rendered_with: &BTreeMap<String, String>) -> Result<i32> {
+    let remote = input_value(rendered_with, &["remote"]).unwrap_or("origin");
+    let source_remote = input_value(rendered_with, &["source", "src"]).unwrap_or(remote);
+    let destination_remote = input_value(
+        rendered_with,
+        &["destination", "destenation", "dest", "to", "target"],
+    )
+    .unwrap_or(remote);
+
+    if input_bool(rendered_with, &["mirror"], false) {
+        let fetch_status = git_status(
+            ctx,
+            &[
+                "fetch".to_string(),
+                "--prune".to_string(),
+                source_remote.to_string(),
+            ],
+        )?;
+        if fetch_status != 0 {
+            return Ok(fetch_status);
+        }
+        return git_status(
+            ctx,
+            &[
+                "push".to_string(),
+                "--mirror".to_string(),
+                destination_remote.to_string(),
+            ],
+        );
+    }
+
+    let branch = input_value(rendered_with, &["branch", "ref"])
+        .map(ToOwned::to_owned)
+        .or_else(|| ctx.repo.branch.clone())
+        .or_else(|| ctx.git.current_branch(&ctx.repo).ok().flatten());
+
+    if input_bool(rendered_with, &["prune"], false) {
+        let status = git_status(
+            ctx,
+            &[
+                "fetch".to_string(),
+                "--prune".to_string(),
+                source_remote.to_string(),
+            ],
+        )?;
+        if status != 0 {
+            return Ok(status);
+        }
+    }
+
+    if input_bool(rendered_with, &["pull"], true) {
+        let strategy = sync_pull_strategy(rendered_with);
+        if strategy != "none" {
+            let mut args = vec!["pull".to_string()];
+            match strategy.as_str() {
+                "ff-only" | "ff" => args.push("--ff-only".to_string()),
+                "rebase" => args.push("--rebase".to_string()),
+                "merge" => args.push("--no-rebase".to_string()),
+                other => {
+                    return Err(CiError::Usage(format!(
+                        "sync strategy must be `ff-only`, `rebase`, `merge`, or `none`; got `{other}`"
+                    )));
+                }
+            }
+            args.push(source_remote.to_string());
+            if let Some(branch) = branch.as_ref() {
+                args.push(branch.clone());
+            }
+            let status = git_status(ctx, &args)?;
+            if status != 0 {
+                return Ok(status);
+            }
+        }
+    }
+
+    if input_bool(rendered_with, &["push"], true) {
+        let mut args = vec!["push".to_string()];
+        if input_bool(
+            rendered_with,
+            &["follow-tags", "follow_tags", "tags"],
+            false,
+        ) {
+            args.push("--follow-tags".to_string());
+        }
+        args.push(destination_remote.to_string());
+        args.push(
+            branch
+                .as_ref()
+                .map(|branch| format!("HEAD:{branch}"))
+                .unwrap_or_else(|| "HEAD".to_string()),
+        );
+        let status = git_status(ctx, &args)?;
+        if status != 0 {
+            return Ok(status);
+        }
+    }
+
+    Ok(0)
+}
+
+fn expand_export_sources(root: &Path, specs: &[String]) -> Result<Vec<PathBuf>> {
+    let mut sources = Vec::new();
+    for spec in specs {
+        let pattern_path = resolve_export_path(root, spec);
+        let pattern = pattern_path.to_str().ok_or_else(|| {
+            CiError::Message(format!("invalid export source {}", pattern_path.display()))
+        })?;
+        let before = sources.len();
+        for entry in glob(pattern)? {
+            let path = entry?;
+            if path.exists() {
+                sources.push(path);
+            }
+        }
+        if sources.len() == before {
+            return Err(CiError::Message(format!(
+                "export source matched no paths: {spec}"
+            )));
+        }
+    }
+    Ok(sources)
+}
+
+fn resolve_export_path(root: &Path, value: &str) -> PathBuf {
+    if value == "~" {
+        if let Some(home) = env::var_os("HOME") {
+            return PathBuf::from(home);
+        }
+    }
+    if let Some(rest) = value.strip_prefix("~/") {
+        if let Some(home) = env::var_os("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+
+    let path = Path::new(value);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    }
+}
+
+fn export_target_path(
+    source: &Path,
+    destination: &Path,
+    raw_destination: &str,
+    source_count: usize,
+) -> Result<PathBuf> {
+    if source_count == 1
+        && !destination.is_dir()
+        && !raw_destination.ends_with('/')
+        && !raw_destination.ends_with(std::path::MAIN_SEPARATOR)
+    {
+        return Ok(destination.to_path_buf());
+    }
+
+    let name = source.file_name().ok_or_else(|| {
+        CiError::Message(format!(
+            "cannot export {} into a directory without a file name",
+            source.display()
+        ))
+    })?;
+    Ok(destination.join(name))
+}
+
+fn input_value<'a>(values: &'a BTreeMap<String, String>, keys: &[&str]) -> Option<&'a str> {
+    keys.iter()
+        .find_map(|key| values.get(*key).map(String::as_str))
+}
+
+fn input_bool(values: &BTreeMap<String, String>, keys: &[&str], default: bool) -> bool {
+    input_value(values, keys).map(parse_bool).unwrap_or(default)
+}
+
+fn sync_pull_strategy(values: &BTreeMap<String, String>) -> String {
+    input_value(values, &["strategy", "pull-strategy", "pull_strategy"])
+        .map(|value| value.trim().to_ascii_lowercase())
+        .unwrap_or_else(|| {
+            if input_bool(values, &["automerge", "auto-merge", "merge"], false) {
+                "merge".to_string()
+            } else {
+                "ff-only".to_string()
+            }
+        })
+}
+
+fn git_status(ctx: &AppContext, args: &[String]) -> Result<i32> {
+    ctx.output.verbose(format!("git {}", args.join(" ")));
+    let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+    ctx.git.status_in_dir(&ctx.repo.root, &args)
 }
 
 fn parse_cleanup_ignored_mode(step_name: &str, value: Option<&str>) -> Result<CleanIgnoredMode> {
@@ -1757,6 +2073,7 @@ fn parse_path_list(value: &str) -> Vec<String> {
     value
         .split(['\n', ','])
         .map(str::trim)
+        .map(|item| item.strip_prefix("- ").unwrap_or(item).trim())
         .filter(|item| !item.is_empty())
         .map(ToOwned::to_owned)
         .collect()
@@ -2220,7 +2537,8 @@ mod tests {
     use crate::git::CleanIgnoredMode;
 
     use super::{
-        evaluate_condition, executable_exists, parse_cleanup_ignored_mode, ExpressionContext,
+        evaluate_condition, executable_exists, parse_cleanup_ignored_mode, parse_path_list,
+        run_export_step, ExpressionContext,
     };
 
     fn expr_ctx<'a>(
@@ -2337,5 +2655,57 @@ mod tests {
             CleanIgnoredMode::Only
         );
         assert!(parse_cleanup_ignored_mode("cleanup", Some("maybe")).is_err());
+    }
+
+    #[test]
+    fn path_list_accepts_yaml_sequence_text() {
+        assert_eq!(
+            parse_path_list("- target/release/ci\n- dist/app.tar.gz"),
+            vec!["target/release/ci", "dist/app.tar.gz"]
+        );
+    }
+
+    #[test]
+    fn export_single_file_uses_exact_destination_path() {
+        let temp = TempDir::new().expect("tempdir");
+        fs::create_dir_all(temp.path().join("target/release")).expect("create target");
+        fs::write(temp.path().join("target/release/ci"), "bin").expect("write source");
+
+        let mut inputs = BTreeMap::new();
+        inputs.insert("src".to_string(), "target/release/ci".to_string());
+        inputs.insert("dest".to_string(), "dist/ci".to_string());
+
+        assert_eq!(
+            run_export_step(temp.path(), &inputs).expect("export should succeed"),
+            0
+        );
+        assert_eq!(
+            fs::read_to_string(temp.path().join("dist/ci")).expect("read exported file"),
+            "bin"
+        );
+    }
+
+    #[test]
+    fn export_multiple_sources_uses_destination_as_directory() {
+        let temp = TempDir::new().expect("tempdir");
+        fs::write(temp.path().join("one.txt"), "one").expect("write source one");
+        fs::write(temp.path().join("two.txt"), "two").expect("write source two");
+
+        let mut inputs = BTreeMap::new();
+        inputs.insert("source".to_string(), "one.txt\ntwo.txt".to_string());
+        inputs.insert("destination".to_string(), "out".to_string());
+
+        assert_eq!(
+            run_export_step(temp.path(), &inputs).expect("export should succeed"),
+            0
+        );
+        assert_eq!(
+            fs::read_to_string(temp.path().join("out/one.txt")).expect("read one"),
+            "one"
+        );
+        assert_eq!(
+            fs::read_to_string(temp.path().join("out/two.txt")).expect("read two"),
+            "two"
+        );
     }
 }

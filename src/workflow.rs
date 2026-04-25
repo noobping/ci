@@ -120,7 +120,7 @@ impl NativeStep {
             && self
                 .uses
                 .as_deref()
-                .map(is_native_inline_clean_builtin)
+                .map(is_native_inline_action_builtin)
                 .unwrap_or(false)
         {
             return Ok(self);
@@ -129,7 +129,7 @@ impl NativeStep {
         match (self.run.is_some(), self.uses.is_some()) {
             (true, false) | (false, true) => Ok(self),
             _ => Err(crate::error::CiError::Message(format!(
-                "{} step {} must define exactly one of `run` or `uses`",
+                "{} step {} must define exactly one of `run` or `use`",
                 workflow_path.display(),
                 index + 1
             ))),
@@ -182,6 +182,8 @@ struct NativeWorkflowFile {
 struct RawNativeStep {
     name: Option<String>,
     run: Option<String>,
+    #[serde(rename = "use")]
+    use_value: Option<String>,
     uses: Option<String>,
     shell: Option<String>,
     #[serde(default)]
@@ -202,18 +204,42 @@ struct RawNativeStep {
 
 impl RawNativeStep {
     fn into_step(self, workflow_path: &Path, index: usize) -> Result<NativeStep> {
+        let RawNativeStep {
+            name,
+            run,
+            use_value,
+            uses,
+            shell,
+            env,
+            with,
+            extra,
+            if_condition,
+            working_directory,
+            continue_on_error,
+            timeout_minutes,
+        } = self;
+        let source_count = usize::from(use_value.is_some()) + usize::from(uses.is_some());
+        if source_count > 1 {
+            return Err(crate::error::CiError::Message(format!(
+                "{} step {} must define only one of `use` or `uses`",
+                workflow_path.display(),
+                index + 1
+            )));
+        }
+        let uses = use_value.or(uses);
+
         NativeStep {
-            name: self.name,
-            run: self.run,
-            uses: self.uses,
-            with: stringify_yaml_map(self.with),
-            extra: stringify_yaml_map(self.extra),
-            shell: self.shell,
-            env: stringify_yaml_map(self.env),
-            if_condition: self.if_condition,
-            working_directory: self.working_directory,
-            continue_on_error: self.continue_on_error,
-            timeout_minutes: self.timeout_minutes,
+            name,
+            run,
+            uses,
+            with: stringify_yaml_map(with),
+            extra: stringify_yaml_map(extra),
+            shell,
+            env: stringify_yaml_map(env),
+            if_condition,
+            working_directory,
+            continue_on_error,
+            timeout_minutes,
         }
         .validate(workflow_path, index)
     }
@@ -232,7 +258,7 @@ impl NativeWorkflowFile {
     }
 }
 
-fn is_native_inline_clean_builtin(uses: &str) -> bool {
+fn is_native_inline_action_builtin(uses: &str) -> bool {
     let normalized = uses
         .split('@')
         .next()
@@ -762,7 +788,8 @@ mod tests {
         let file: NativeWorkflowFile = serde_yaml::from_str(
             r#"
 steps:
-  - uses: clean
+  - name: Fresh clean
+    use: clean
     cargo: true
     purge: true
     ignored: only
@@ -778,6 +805,7 @@ steps:
             .into_step(Path::new(".ci/build.yml"), 0)
             .expect("valid step");
 
+        assert_eq!(step.name.as_deref(), Some("Fresh clean"));
         assert_eq!(step.uses.as_deref(), Some("clean"));
         assert_eq!(step.run.as_deref(), Some("cargo sweep -i"));
         assert_eq!(step.extra.get("cargo").map(String::as_str), Some("true"));
@@ -786,11 +814,11 @@ steps:
     }
 
     #[test]
-    fn native_non_clean_step_rejects_run_with_uses() {
+    fn native_non_clean_action_rejects_run_with_use() {
         let file: NativeWorkflowFile = serde_yaml::from_str(
             r#"
 steps:
-  - uses: checkout
+  - use: checkout
     run: git status
 "#,
         )
@@ -805,6 +833,29 @@ steps:
 
         assert!(err
             .to_string()
-            .contains("must define exactly one of `run` or `uses`"));
+            .contains("must define exactly one of `run` or `use`"));
+    }
+
+    #[test]
+    fn native_step_rejects_multiple_action_source_aliases() {
+        let file: NativeWorkflowFile = serde_yaml::from_str(
+            r#"
+steps:
+  - use: clean
+    uses: checkout
+"#,
+        )
+        .expect("parse workflow");
+        let err = file
+            .steps
+            .into_iter()
+            .next()
+            .expect("step")
+            .into_step(Path::new(".ci/build.yml"), 0)
+            .expect_err("step should be rejected");
+
+        assert!(err
+            .to_string()
+            .contains("must define only one of `use` or `uses`"));
     }
 }
