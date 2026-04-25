@@ -1,32 +1,46 @@
 on:
   - manual
   - pre-push
+arch:
+  - x64
+  - arm64
 steps:
-  - if: exists(cargo)
+  - name: format
+    if: exists(cargo)
     run: cargo fmt --check
-  - if: missing(cargo)
+  - name: format
+    if: missing(cargo)
     run: toolbox run cargo fmt --check
 
-  - if: exists(cargo)
+  - name: lint
+    if: exists(cargo)
     run: cargo clippy --all-targets -- -D warnings
-  - if: missing(cargo)
+  - name: lint
+    if: missing(cargo)
     run: toolbox run cargo clippy --all-targets -- -D warnings
 
-  - if: exists(cargo)
+  - name: test
+    if: exists(cargo)
     run: cargo test --all
-  - if: missing(cargo)
+  - name: test
+    if: missing(cargo)
     run: toolbox run cargo test --all
 
-  - if: exists(cargo)
+  - name: build
+    if: exists(cargo)
     run: cargo build --release
-  - if: missing(cargo)
+  - name: build
+    if: missing(cargo)
     run: toolbox run cargo build --release
 
-  - if: exists(src)
+  - name: install executable
+    if: exists(src)
     use: export
     src: target/release/ci
     dest: ~/.local/bin/
     replace: true
 
-  - run: ci completion bash > ~/.local/share/bash-completion/completions/ci
-  - run: ci man --dir ~/.local/share/man/man1
+  - name: install bash completion
+    run: ci completion bash > ~/.local/share/bash-completion/completions/ci
+  - name: install manual
+    run: ci man --dir ~/.local/share/man/man1
