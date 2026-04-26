@@ -114,6 +114,7 @@ Gitea Actions style workflows.
 .EX
 ci list
 ci build
+ci build -- --dry-run
 ci run --event pre-push build
 ci run --arch x64,arm64 --tech rust build
 ci explain build --arch x64 --tech rust
@@ -124,6 +125,9 @@ ci man --dir ~/.local/share/man/man1
 .SH PRECEDENCE
 CLI flags override workflow fields, workflow fields override workflow defaults, workflow defaults override project config, project config overrides user config, user config overrides system config, and config overrides auto-detection. Values under policy or locked are applied after normal config and CLI flags; system policy is strongest, then user policy, then project policy.
 --config replaces normal config discovery but keeps system and user policy/locked sections.
+.SH BUILD ARGUMENTS
+Unknown top-level commands are treated as workflow names, so ci build is equivalent to ci run build.
+Arguments after the build workflow name are forwarded to the detected build step. Use -- before build-command flags when a flag name overlaps with ci, for example ci build -- --dry-run.
 .SH NATIVE WORKFLOW EXAMPLE
 .EX
 name: build
