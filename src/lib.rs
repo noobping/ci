@@ -47,6 +47,10 @@ fn run(cli: Cli, doctor_alias: bool, bootstrap_output: Output) -> Result<i32> {
         Commands::Completion(args) => return docs::cmd_completion(args),
         Commands::Man(args) => return docs::cmd_man(args),
         Commands::Schema(args) => return schema::cmd_schema(args),
+        Commands::Update(args) if args.all => {
+            let bootstrap_git = GitService::bootstrap(&cli.global, bootstrap_output.clone());
+            return install::cmd_update_all(&cli.global, args, &bootstrap_git, bootstrap_output);
+        }
         _ => {}
     }
 

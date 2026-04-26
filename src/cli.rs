@@ -309,6 +309,14 @@ pub struct UpdateArgs {
 
     #[arg(long = "dry-run", help = "Show what would be updated")]
     pub dry_run: bool,
+
+    #[arg(
+        short = 'a',
+        long = "all",
+        alias = "recursive",
+        help = "Update ci in all Git repositories under --repo"
+    )]
+    pub all: bool,
 }
 
 #[derive(Clone, Debug, Args)]

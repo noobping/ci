@@ -2,6 +2,7 @@ mod common;
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::process::Command;
 
 use common::assertions::{assert_failure, assert_success, ci_command, output, stderr, stdout};
@@ -546,6 +547,54 @@ fn other_reports_installed_runner_hash_status() {
 }
 
 #[test]
+fn update_all_updates_installed_runners_under_directory() {
+    let parent = TempDir::new().expect("create parent dir");
+    let repo_one = parent.path().join("one");
+    let repo_two = parent.path().join("two");
+    let repo_skip = parent.path().join("skip");
+    init_git_repo(&repo_one);
+    init_git_repo(&repo_two);
+    init_git_repo(&repo_skip);
+
+    for repo in [&repo_one, &repo_two] {
+        let mut install = ci_command();
+        install.args([
+            "--repo",
+            repo.to_str().expect("repo path"),
+            "install",
+            "--mode",
+            "copy",
+            "--hooks",
+            "pre-push",
+        ]);
+        assert_success(output(install));
+        fs::write(
+            repo.join(format!(".git/ci/run.{}", host_runner_suffix())),
+            "old runner",
+        )
+        .expect("overwrite installed runner");
+    }
+
+    let mut update = ci_command();
+    update.args([
+        "--repo",
+        parent.path().to_str().expect("parent path"),
+        "update",
+        "--all",
+    ]);
+    let update = assert_success(output(update));
+    let update_stdout = stdout(&update);
+    assert!(update_stdout.contains("Updated 2 ci installation(s); skipped 1; failed 0."));
+
+    let current = fs::read(env!("CARGO_BIN_EXE_ci")).expect("read current test binary");
+    for repo in [&repo_one, &repo_two] {
+        let installed = fs::read(repo.join(format!(".git/ci/run.{}", host_runner_suffix())))
+            .expect("read updated runner");
+        assert_eq!(installed, current);
+    }
+}
+
+#[test]
 fn install_uses_configured_default_mode_when_mode_flag_is_omitted() {
     let repo = TestRepo::new();
     let host_arch = host_runner_suffix();
@@ -741,4 +790,36 @@ fn host_runner_suffix() -> &'static str {
         "aarch64" | "arm64" => "arm64",
         other => other,
     }
+}
+
+fn init_git_repo(path: &Path) {
+    fs::create_dir_all(path).expect("create repo dir");
+    run_setup_ok(Command::new("git").arg("init").arg(path));
+    run_setup_ok(Command::new("git").arg("-C").arg(path).args([
+        "config",
+        "user.email",
+        "ci@example.test",
+    ]));
+    run_setup_ok(
+        Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(["config", "user.name", "ci tests"]),
+    );
+    run_setup_ok(Command::new("git").arg("-C").arg(path).args([
+        "commit",
+        "--allow-empty",
+        "-m",
+        "initial",
+    ]));
+}
+
+fn run_setup_ok(command: &mut Command) {
+    let output = command.output().expect("run setup command");
+    assert!(
+        output.status.success(),
+        "setup command failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

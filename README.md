@@ -644,10 +644,13 @@ That installs `dist/ci-linux-x64` to `.git/ci/run.x64` and `dist/ci-linux-arm64`
 
 ```sh
 ci update
+ci update --all
 ci other
 ```
 
 For link mode, this refreshes the runner symlink. For copy mode, this copies the current binary again. `ci update --source 'dist/ci-linux-{arch}'` uses the same per-architecture source template as install. Managed hooks are refreshed as direct symlinks when one runner is installed, or selector scripts when multiple runners are installed.
+
+Use `ci update --all` or `ci update --recursive` to search under `--repo` and update every Git repository where `ci` is already installed. Repositories without an installed `.git/ci/run...` binary are skipped.
 
 `ci other` prints the host-architecture runner installed under `.git/ci`, hashes it against the currently running `ci`, and reports `same`, `update-needed`, or `missing`.
 

@@ -274,10 +274,12 @@ Only hooks containing the managed-by: ci marker or pointing at managed .git/ci/r
 .SH EXAMPLES
 .EX
 ci update
+ci update --all
 ci update --source ./target/release/ci
 .EE
 .SH NOTES
 For link installs this refreshes links. For copy installs this copies the current or selected binary again.
+Use --all, also available as -a or --recursive, to search under --repo and update every Git repository where ci is already installed.
 "#,
         ),
         "ci-other" => Some(

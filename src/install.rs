@@ -3,10 +3,14 @@ use std::fs;
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use crate::cli::{InstallArgs, UninstallArgs, UpdateArgs};
-use crate::config::{Architecture, InstallMode};
+use walkdir::WalkDir;
+
+use crate::cli::{GlobalOptions, InstallArgs, UninstallArgs, UpdateArgs};
+use crate::config::{Architecture, InstallMode, ResolvedConfig};
 use crate::error::{CiError, Result};
-use crate::repo::RepoInfo;
+use crate::git::GitService;
+use crate::output::Output;
+use crate::repo::{absolute_path, RepoInfo};
 use crate::runner::AppContext;
 use crate::workflow::all_hooks;
 
@@ -118,16 +122,91 @@ pub fn cmd_install(ctx: &AppContext, args: &InstallArgs) -> Result<i32> {
 }
 
 pub fn cmd_update(ctx: &AppContext, args: &UpdateArgs) -> Result<i32> {
+    update_one_repo(ctx, args)
+}
+
+pub fn cmd_update_all(
+    global: &GlobalOptions,
+    args: &UpdateArgs,
+    bootstrap_git: &GitService,
+    output: Output,
+) -> Result<i32> {
+    let base = absolute_path(&global.repo)?;
+    let repos = discover_git_repositories(&base, &output)?;
+    if repos.is_empty() {
+        return Err(CiError::Message(format!(
+            "no Git repositories found under {}",
+            base.display()
+        )));
+    }
+
+    let mut updated = 0usize;
+    let mut skipped = 0usize;
+    let mut failed = 0usize;
+    for repo_path in repos {
+        let mut repo_global = global.clone();
+        repo_global.repo = repo_path.clone();
+        let ctx = match update_context_for_repo(&repo_global, bootstrap_git) {
+            Ok(ctx) => ctx,
+            Err(err) => {
+                failed += 1;
+                output.error(format!("failed to read {}: {err}", repo_path.display()));
+                continue;
+            }
+        };
+
+        if !managed_install_exists(&ctx.repo, &ctx.config.defaults.arch) {
+            skipped += 1;
+            output.info(format!(
+                "Skipping {} (ci is not installed)",
+                ctx.repo.root.display()
+            ));
+            continue;
+        }
+
+        output.info(format!("Updating {}", ctx.repo.root.display()));
+        match update_one_repo(&ctx, args) {
+            Ok(_) => updated += 1,
+            Err(err) => {
+                failed += 1;
+                output.error(format!(
+                    "failed to update {}: {err}",
+                    ctx.repo.root.display()
+                ));
+            }
+        }
+    }
+
+    output.info(format!(
+        "Updated {updated} ci installation(s); skipped {skipped}; failed {failed}."
+    ));
+    if failed == 0 {
+        Ok(0)
+    } else {
+        Err(CiError::Message(format!(
+            "failed to update {failed} ci installation(s)"
+        )))
+    }
+}
+
+fn update_context_for_repo(
+    global: &GlobalOptions,
+    bootstrap_git: &GitService,
+) -> Result<AppContext> {
+    let mut repo = RepoInfo::discover(global, bootstrap_git)?;
+    let config = ResolvedConfig::load(&repo, global)?;
+    let output = Output::from_settings(global, Some(&config.defaults));
+    let git = GitService::configured(&config.defaults, global, output.clone());
+    repo.apply_defaults(&config.defaults);
+    repo.refresh_branch(&git)?;
+    Ok(AppContext::new(global.clone(), output, repo, config, git))
+}
+
+fn update_one_repo(ctx: &AppContext, args: &UpdateArgs) -> Result<i32> {
     let target_arches = install_target_arches(args.source.as_deref(), &ctx.config.defaults.arch);
     let ci_bins = managed_runner_targets(&ctx.repo, &target_arches);
-    let installed_ci_bins = managed_runner_paths(&ctx.repo, &ctx.config.defaults.arch);
-    let legacy_ci_bin = legacy_managed_runner_path(&ctx.repo);
 
-    if !installed_ci_bins
-        .iter()
-        .any(|path| path_exists_or_symlink(path))
-        && !path_exists_or_symlink(&legacy_ci_bin)
-    {
+    if !managed_install_exists(&ctx.repo, &ctx.config.defaults.arch) {
         return Err(CiError::Message(format!(
             "ci does not look installed in {}; run `ci install` first",
             ctx.repo.git_dir.display()
@@ -163,6 +242,49 @@ pub fn cmd_update(ctx: &AppContext, args: &UpdateArgs) -> Result<i32> {
     refresh_managed_hooks(ctx, args.dry_run)?;
     ctx.output.info("Updated ci installation.");
     Ok(0)
+}
+
+fn discover_git_repositories(base: &Path, output: &Output) -> Result<Vec<PathBuf>> {
+    let mut repos = BTreeSet::new();
+    let mut walker = WalkDir::new(base).follow_links(false).into_iter();
+    while let Some(entry) = walker.next() {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                output.warn(format!("skipping unreadable path: {err}"));
+                continue;
+            }
+        };
+        let path = entry.path();
+        let file_name = entry.file_name();
+        if file_name == ".git" {
+            if let Some(parent) = path.parent() {
+                repos.insert(parent.to_path_buf());
+            }
+            if entry.file_type().is_dir() {
+                walker.skip_current_dir();
+            }
+            continue;
+        }
+        if entry.file_type().is_dir() && looks_like_bare_git_repository(path) {
+            repos.insert(path.to_path_buf());
+            walker.skip_current_dir();
+        }
+    }
+    Ok(repos.into_iter().collect())
+}
+
+fn looks_like_bare_git_repository(path: &Path) -> bool {
+    path.join("HEAD").is_file() && path.join("objects").is_dir() && path.join("refs").is_dir()
+}
+
+fn managed_install_exists(repo: &RepoInfo, arches: &[Architecture]) -> bool {
+    let installed_ci_bins = managed_runner_paths(repo, arches);
+    let legacy_ci_bin = legacy_managed_runner_path(repo);
+    installed_ci_bins
+        .iter()
+        .any(|path| path_exists_or_symlink(path))
+        || path_exists_or_symlink(&legacy_ci_bin)
 }
 
 pub fn cmd_uninstall(ctx: &AppContext, args: &UninstallArgs) -> Result<i32> {
