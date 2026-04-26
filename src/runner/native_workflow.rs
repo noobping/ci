@@ -1,13 +1,16 @@
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::artifacts::ArtifactSession;
 use crate::conditions::{
     evaluate_condition, evaluate_condition_with_probe, interpolate_expressions, ExpressionContext,
 };
+use crate::config::ContainerType;
 use crate::containers::{
-    container_platform, validate_container_image_ref, ContainerBackend, ContainerCommandExistsSpec,
-    ContainerShellSpec,
+    container_platform, generated_native_containerfile, normalized_rust_components,
+    validate_container_image_ref, validate_container_packages, ContainerBackend,
+    ContainerCommandExistsSpec, ContainerShellSpec,
 };
 use crate::error::{CiError, Result};
 use crate::git::sanitize_component;
@@ -18,7 +21,8 @@ use super::builtins::{interpolate_map, run_builtin_step, BuiltinStepInvocation, 
 use super::cache::{save_pending_caches, CacheState};
 use super::env::{merged_env, resolve_workdir, run_shell};
 use super::native_container::{
-    native_container_cache_mounts, prepare_native_container_image, NativeContainerExecution,
+    native_container_base_image, native_container_cache_mounts, native_container_effective_type,
+    prepare_native_container_image, NativeContainerExecution,
 };
 
 struct StepContainerExecution<'a> {
@@ -104,6 +108,7 @@ pub(crate) fn run_native_yaml(
             ctx,
             invocation,
             resolved,
+            steps,
             step,
             step_name,
             index,
@@ -253,6 +258,7 @@ fn prepare_step_container<'a>(
     ctx: &AppContext,
     invocation: &RunInvocation,
     resolved: &ResolvedWorkflow,
+    steps: &[NativeStep],
     step: &NativeStep,
     step_name: &str,
     step_index: usize,
@@ -276,6 +282,7 @@ fn prepare_step_container<'a>(
             ctx,
             invocation,
             resolved,
+            steps,
             step_name,
             step_index,
             workflow_container,
@@ -296,6 +303,7 @@ fn prepare_configured_step_container<'a>(
     ctx: &AppContext,
     invocation: &RunInvocation,
     resolved: &ResolvedWorkflow,
+    steps: &[NativeStep],
     step_name: &str,
     step_index: usize,
     workflow_container: Option<&NativeContainerExecution<'a>>,
@@ -330,12 +338,21 @@ fn prepare_configured_step_container<'a>(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(|value| step_container_file(&ctx.repo.root, value));
-    let uses_workflow_image =
-        build_file.is_none() && config.image.is_none() && workflow_container.is_some();
-    let image = if build_file.is_some() {
-        config.image.clone().unwrap_or_else(|| {
-            generated_step_container_image_name(&resolved.name, step_name, step_index, &platform)
-        })
+    let has_generated_layers = !config.packages.is_empty() || !config.components.is_empty();
+    let uses_workflow_image = !has_generated_layers
+        && build_file.is_none()
+        && config.image.is_none()
+        && workflow_container.is_some();
+    let generated_image =
+        generated_step_container_image_name(&resolved.name, step_name, step_index, &platform);
+    let image = if has_generated_layers {
+        config
+            .image
+            .clone()
+            .filter(|_| build_file.is_some())
+            .unwrap_or(generated_image)
+    } else if build_file.is_some() {
+        config.image.clone().unwrap_or(generated_image)
     } else {
         config
             .image
@@ -350,15 +367,71 @@ fn prepare_configured_step_container<'a>(
     };
     validate_container_image_ref(&image)?;
 
+    if !config.components.is_empty()
+        && native_container_effective_type(ctx, resolved, steps) != ContainerType::Rust
+    {
+        return Err(CiError::Usage(
+            "step container.components is only supported for Rust containers".to_string(),
+        ));
+    }
+    validate_container_packages(&config.packages)?;
+    let components = normalized_rust_components(&config.components)?;
+
     let build_status = if let Some(file) = build_file {
         if !file.exists() {
             return Err(CiError::NotFound(file.display().to_string()));
         }
+        let base_image = if has_generated_layers {
+            generated_step_container_base_image_name(
+                &resolved.name,
+                step_name,
+                step_index,
+                &platform,
+            )
+        } else {
+            image.clone()
+        };
+        validate_container_image_ref(&base_image)?;
         ctx.output.verbose(format!(
             "building step `{step_name}` container from {}",
             file.display()
         ));
-        backend.build(&file, &ctx.repo.root, &image, Some(&platform))?
+        let status = backend.build(&file, &ctx.repo.root, &base_image, Some(&platform))?;
+        if status != 0 || !has_generated_layers {
+            status
+        } else {
+            build_step_package_image(
+                ctx,
+                backend,
+                resolved,
+                step_name,
+                step_index,
+                &platform,
+                &base_image,
+                &image,
+                &config.packages,
+                &components,
+            )?
+        }
+    } else if has_generated_layers {
+        let base_image = config
+            .image
+            .clone()
+            .or_else(|| workflow_container.map(|container| container.image.clone()))
+            .unwrap_or_else(|| native_container_base_image(ctx, resolved, steps));
+        validate_container_image_ref(&base_image)?;
+        build_step_package_image(
+            ctx,
+            backend,
+            resolved,
+            step_name,
+            step_index,
+            &platform,
+            &base_image,
+            &image,
+            &config.packages,
+            &components,
+        )?
     } else {
         0
     };
@@ -378,6 +451,34 @@ fn prepare_configured_step_container<'a>(
         },
         build_status,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_step_package_image(
+    ctx: &AppContext,
+    backend: &ContainerBackend,
+    resolved: &ResolvedWorkflow,
+    step_name: &str,
+    step_index: usize,
+    platform: &str,
+    base_image: &str,
+    image: &str,
+    packages: &[String],
+    components: &[String],
+) -> Result<i32> {
+    let file_stem = step_container_file_stem(&resolved.name, step_name, step_index, platform);
+    let dir = ctx.repo.state_dir.join("containers");
+    fs::create_dir_all(&dir)?;
+    let file = dir.join(format!("{file_stem}.Containerfile"));
+    fs::write(
+        &file,
+        generated_native_containerfile(base_image, packages, components),
+    )?;
+    ctx.output.verbose(format!(
+        "building step `{step_name}` package container from {}",
+        file.display()
+    ));
+    backend.build(&file, &dir, image, Some(platform))
 }
 
 fn workflow_step_container<'a>(
@@ -413,8 +514,28 @@ fn generated_step_container_image_name(
     step_index: usize,
     platform: &str,
 ) -> String {
+    let file_stem = step_container_file_stem(workflow_name, step_name, step_index, platform);
+    format!("localhost/{file_stem}:latest")
+}
+
+fn generated_step_container_base_image_name(
+    workflow_name: &str,
+    step_name: &str,
+    step_index: usize,
+    platform: &str,
+) -> String {
+    let file_stem = step_container_file_stem(workflow_name, step_name, step_index, platform);
+    format!("localhost/{file_stem}-base:latest")
+}
+
+fn step_container_file_stem(
+    workflow_name: &str,
+    step_name: &str,
+    step_index: usize,
+    platform: &str,
+) -> String {
     format!(
-        "localhost/ci-{}-step-{}-{}-{}:latest",
+        "ci-{}-step-{}-{}-{}",
         sanitize_component(workflow_name),
         step_index + 1,
         sanitize_component(step_name),

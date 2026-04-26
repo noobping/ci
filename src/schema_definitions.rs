@@ -203,7 +203,9 @@ fn step_container_schema() -> serde_json::Value {
                     "read-only": { "type": "boolean" },
                     "read_only": { "type": "boolean" },
                     "env": string_map_schema(),
-                    "volumes": string_array_schema()
+                    "volumes": string_array_schema(),
+                    "packages": string_array_schema(),
+                    "components": string_array_schema()
                 }
             }
         ]

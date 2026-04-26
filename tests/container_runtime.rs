@@ -260,6 +260,84 @@ steps:
 }
 
 #[test]
+fn native_step_can_build_package_container_for_single_step() {
+    let repo = TestRepo::new();
+    let fake = TempDir::new().expect("fake podman dir");
+    let fake_bin = make_fake_podman(fake.path());
+    repo.write(
+        ".ci/build.yml",
+        r#"
+on: [manual]
+tech: rust
+steps:
+  - name: package step
+    container:
+      image: localhost/base-rust
+      packages:
+        - pkg-config
+      components:
+        - cargo-fmt
+    run: printf packages > packages.txt
+"#,
+    );
+
+    let mut command = repo.ci();
+    command.env("PATH", path_with_fake_bin(&fake_bin)).args([
+        "run",
+        "--container-runtime",
+        "podman",
+        "build",
+    ]);
+    assert_success(output(command));
+
+    assert_eq!(repo.read("packages.txt"), "packages");
+    let log = std::fs::read_to_string(fake.path().join("podman.log")).expect("read podman log");
+    assert!(log.contains("build --platform linux/amd64"));
+    assert!(log.contains("localhost/ci-build-step-1-package-step-linux-amd64:latest"));
+
+    let generated = repo
+        .path()
+        .join(".git/ci/containers/ci-build-step-1-package-step-linux-amd64.Containerfile");
+    let generated = std::fs::read_to_string(generated).expect("read generated Containerfile");
+    assert!(generated.contains("FROM localhost/base-rust"));
+    assert!(generated.contains("rustup component add 'rustfmt'"));
+    assert!(generated.contains("pkg-config"));
+}
+
+#[test]
+fn step_container_components_are_rejected_for_non_rust_stacks() {
+    let repo = TestRepo::new();
+    let fake = TempDir::new().expect("fake podman dir");
+    let fake_bin = make_fake_podman(fake.path());
+    repo.write(
+        ".ci/build.yml",
+        r#"
+on: [manual]
+tech: node
+steps:
+  - name: node component
+    container:
+      image: localhost/base-node
+      components: [cargo-fmt]
+    run: npm run build
+"#,
+    );
+
+    let mut command = repo.ci();
+    command.env("PATH", path_with_fake_bin(&fake_bin)).args([
+        "run",
+        "--container-runtime",
+        "podman",
+        "build",
+    ]);
+    let output = assert_failure(output(command), 2);
+
+    assert!(
+        stderr(&output).contains("step container.components is only supported for Rust containers")
+    );
+}
+
+#[test]
 fn container_components_are_rejected_for_non_rust_stacks() {
     let repo = TestRepo::new();
     let fake = TempDir::new().expect("fake podman dir");

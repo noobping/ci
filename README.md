@@ -430,10 +430,12 @@ steps:
         TOOL_MODE: strict
       volumes:
         - /tmp:/tmp/ci-tools
+      packages:
+        - shellcheck
     run: tool check
 ```
 
-`container: false` still keeps a step on the host. `ci run --no-container` disables workflow and step containers for native YAML workflows.
+Step-level `packages` and Rust `components` build a generated image for that step, using the step `image` as the base image. `container: false` still keeps a step on the host. `ci run --no-container` disables workflow and step containers for native YAML workflows.
 
 ## Containerfile Examples
 

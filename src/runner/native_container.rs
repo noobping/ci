@@ -89,7 +89,7 @@ pub(crate) fn prepare_native_container_image(
     })
 }
 
-fn native_container_base_image(
+pub(crate) fn native_container_base_image(
     ctx: &AppContext,
     resolved: &ResolvedWorkflow,
     steps: &[NativeStep],
@@ -111,7 +111,7 @@ fn native_container_base_image(
     }
 }
 
-fn native_container_effective_type(
+pub(crate) fn native_container_effective_type(
     ctx: &AppContext,
     resolved: &ResolvedWorkflow,
     steps: &[NativeStep],

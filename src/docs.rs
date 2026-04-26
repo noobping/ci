@@ -166,9 +166,11 @@ steps:
         TOOL_MODE: strict
       volumes:
         - /tmp:/tmp/ci-tools
+      packages:
+        - shellcheck
     run: tool check
 .EE
-Set container: false on a step to run it on the host. ci run --no-container disables workflow and step containers for native YAML workflows.
+Step-level packages and Rust components build a generated image for that step, using the step image as the base image. Set container: false on a step to run it on the host. ci run --no-container disables workflow and step containers for native YAML workflows.
 .SH SETTINGS EXAMPLE
 .EX
 quiet: true
@@ -225,7 +227,7 @@ Known ci options keep their ci meaning before --. Put build-command flags after 
 The space-joined forwarded argument string is available to scripts as CI_WORKFLOW_ARGS.
 Use --container to force native workflows into containers, and --no-container to run them on the host.
 Native containers use stack-aware dependency cache mounts under .git/ci/container-cache.
-A native run step can set container to an image string or to a map with image, file, platform, env, volumes, workdir, and readonly.
+A native run step can set container to an image string or to a map with image, file, packages, components, platform, env, volumes, workdir, and readonly.
 "#,
         ),
         "ci-list" => Some(

@@ -153,6 +153,8 @@ pub struct StepContainerConfig {
     pub readonly: Option<bool>,
     pub env: BTreeMap<String, String>,
     pub volumes: Vec<String>,
+    pub packages: Vec<String>,
+    pub components: Vec<String>,
 }
 
 #[derive(Clone, Debug)]

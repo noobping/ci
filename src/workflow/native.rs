@@ -136,6 +136,8 @@ impl RawNativeStep {
                     readonly: value.readonly,
                     env: value.env,
                     volumes: value.volumes,
+                    packages: value.packages,
+                    components: value.components,
                 }),
             ),
             None => (None, None),
@@ -191,6 +193,10 @@ struct RawStepContainerConfig {
     env: BTreeMap<String, String>,
     #[serde(default)]
     volumes: Vec<String>,
+    #[serde(default)]
+    packages: Vec<String>,
+    #[serde(default)]
+    components: Vec<String>,
 }
 
 impl NativeWorkflowFile {

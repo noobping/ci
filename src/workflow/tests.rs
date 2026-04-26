@@ -147,6 +147,10 @@ steps:
         TOOL_MODE: strict
       volumes:
         - /tmp:/tmp/ci-tools
+      packages:
+        - shellcheck
+      components:
+        - cargo-fmt
     run: tool check
 "#,
     )
@@ -171,6 +175,8 @@ steps:
         Some("strict")
     );
     assert_eq!(container.volumes, vec!["/tmp:/tmp/ci-tools"]);
+    assert_eq!(container.packages, vec!["shellcheck"]);
+    assert_eq!(container.components, vec!["cargo-fmt"]);
 }
 
 #[test]
