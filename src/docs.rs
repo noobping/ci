@@ -275,11 +275,15 @@ Only hooks containing the managed-by: ci marker or pointing at managed .git/ci/r
 .EX
 ci update
 ci update --all
+ci update --all ~/Projects
+ci update ~/Projects/myproject
+ci update -r ~/Projects
+ci update --recursive ~/Projects
 ci update --source ./target/release/ci
 .EE
 .SH NOTES
 For link installs this refreshes links. For copy installs this copies the current or selected binary again.
-Use --all, also available as -a or --recursive, to search under --repo and update every Git repository where ci is already installed.
+Use ci update PATH to update another repository. Use --all or -a to update Git repositories directly in the current directory or path argument, without descending further. Use -r or --recursive to search recursively.
 "#,
         ),
         "ci-other" => Some(

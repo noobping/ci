@@ -49,6 +49,7 @@ pub struct GlobalOptions {
 
     #[arg(
         long = "repo",
+        alias = "repository",
         global = true,
         default_value = ".",
         help = "Repository root to operate on"
@@ -313,10 +314,28 @@ pub struct UpdateArgs {
     #[arg(
         short = 'a',
         long = "all",
-        alias = "recursive",
-        help = "Update ci in all Git repositories under --repo"
+        help = "Update ci in Git repositories directly in PATH or --repo"
     )]
     pub all: bool,
+
+    #[arg(
+        short = 'r',
+        long = "recursive",
+        help = "Recursively update ci in Git repositories under PATH or --repo"
+    )]
+    pub recursive: bool,
+
+    #[arg(
+        value_name = "PATH",
+        help = "Repository to update, or search directory for --all/--recursive"
+    )]
+    pub path: Option<PathBuf>,
+}
+
+impl UpdateArgs {
+    pub fn selected_update(&self) -> bool {
+        self.all || self.recursive || self.path.is_some()
+    }
 }
 
 #[derive(Clone, Debug, Args)]
@@ -445,8 +464,8 @@ fn find_command_index(argv: &[OsString]) -> Option<usize> {
     while i < argv.len() {
         let current = argv[i].to_string_lossy();
         match current.as_ref() {
-            "--repo" | "--ci-dir" | "--config" | "--color" | "--git-mode" | "--git-image"
-            | "--arch" | "--type" | "--tech" | "--tech-stack" | "-t" => {
+            "--repo" | "--repository" | "--ci-dir" | "--config" | "--color" | "--git-mode"
+            | "--git-image" | "--arch" | "--type" | "--tech" | "--tech-stack" | "-t" => {
                 i += 2;
             }
             value if value.starts_with('-') => {

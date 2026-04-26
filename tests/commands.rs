@@ -552,11 +552,13 @@ fn update_all_updates_installed_runners_under_directory() {
     let repo_one = parent.path().join("one");
     let repo_two = parent.path().join("two");
     let repo_skip = parent.path().join("skip");
+    let repo_nested = parent.path().join("group").join("nested");
     init_git_repo(&repo_one);
     init_git_repo(&repo_two);
     init_git_repo(&repo_skip);
+    init_git_repo(&repo_nested);
 
-    for repo in [&repo_one, &repo_two] {
+    for repo in [&repo_one, &repo_two, &repo_nested] {
         let mut install = ci_command();
         install.args([
             "--repo",
@@ -577,10 +579,9 @@ fn update_all_updates_installed_runners_under_directory() {
 
     let mut update = ci_command();
     update.args([
-        "--repo",
-        parent.path().to_str().expect("parent path"),
         "update",
         "--all",
+        parent.path().to_str().expect("parent path"),
     ]);
     let update = assert_success(output(update));
     let update_stdout = stdout(&update);
@@ -592,6 +593,88 @@ fn update_all_updates_installed_runners_under_directory() {
             .expect("read updated runner");
         assert_eq!(installed, current);
     }
+    let nested = fs::read(repo_nested.join(format!(".git/ci/run.{}", host_runner_suffix())))
+        .expect("read nested runner");
+    assert_eq!(nested, b"old runner");
+}
+
+#[test]
+fn update_recursive_updates_installed_runners_under_directory() {
+    let parent = TempDir::new().expect("create parent dir");
+    let repo_one = parent.path().join("one");
+    let repo_nested = parent.path().join("group").join("nested");
+    init_git_repo(&repo_one);
+    init_git_repo(&repo_nested);
+
+    for repo in [&repo_one, &repo_nested] {
+        let mut install = ci_command();
+        install.args([
+            "--repo",
+            repo.to_str().expect("repo path"),
+            "install",
+            "--mode",
+            "copy",
+            "--hooks",
+            "pre-push",
+        ]);
+        assert_success(output(install));
+        fs::write(
+            repo.join(format!(".git/ci/run.{}", host_runner_suffix())),
+            "old runner",
+        )
+        .expect("overwrite installed runner");
+    }
+
+    let mut update = ci_command();
+    update.args([
+        "update",
+        "--recursive",
+        parent.path().to_str().expect("parent path"),
+    ]);
+    let update = assert_success(output(update));
+    let update_stdout = stdout(&update);
+    assert!(update_stdout.contains("Updated 2 ci installation(s); skipped 0; failed 0."));
+
+    let current = fs::read(env!("CARGO_BIN_EXE_ci")).expect("read current test binary");
+    for repo in [&repo_one, &repo_nested] {
+        let installed = fs::read(repo.join(format!(".git/ci/run.{}", host_runner_suffix())))
+            .expect("read updated runner");
+        assert_eq!(installed, current);
+    }
+}
+
+#[test]
+fn update_path_updates_single_installed_repo() {
+    let parent = TempDir::new().expect("create parent dir");
+    let repo = parent.path().join("repo");
+    init_git_repo(&repo);
+
+    let mut install = ci_command();
+    install.args([
+        "--repo",
+        repo.to_str().expect("repo path"),
+        "install",
+        "--mode",
+        "copy",
+        "--hooks",
+        "pre-push",
+    ]);
+    assert_success(output(install));
+    fs::write(
+        repo.join(format!(".git/ci/run.{}", host_runner_suffix())),
+        "old runner",
+    )
+    .expect("overwrite installed runner");
+
+    let mut update = ci_command();
+    update.args(["update", repo.to_str().expect("repo path")]);
+    let update = assert_success(output(update));
+    assert!(stdout(&update).contains("Updated 1 ci installation(s); skipped 0; failed 0."));
+
+    let current = fs::read(env!("CARGO_BIN_EXE_ci")).expect("read current test binary");
+    let installed =
+        fs::read(repo.join(format!(".git/ci/run.{}", host_runner_suffix()))).expect("read runner");
+    assert_eq!(installed, current);
 }
 
 #[test]

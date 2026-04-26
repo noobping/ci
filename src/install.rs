@@ -43,6 +43,13 @@ pub enum BinaryState {
     },
 }
 
+#[derive(Clone, Copy, Debug)]
+enum UpdateRepositoryDiscovery {
+    Single,
+    Direct,
+    Recursive,
+}
+
 #[derive(Clone, Debug)]
 pub struct HookState {
     pub name: String,
@@ -131,11 +138,18 @@ pub fn cmd_update_all(
     bootstrap_git: &GitService,
     output: Output,
 ) -> Result<i32> {
-    let base = absolute_path(&global.repo)?;
-    let repos = discover_git_repositories(&base, &output)?;
+    let base = absolute_path(args.path.as_deref().unwrap_or(&global.repo))?;
+    let discovery = if args.recursive {
+        UpdateRepositoryDiscovery::Recursive
+    } else if args.all {
+        UpdateRepositoryDiscovery::Direct
+    } else {
+        UpdateRepositoryDiscovery::Single
+    };
+    let repos = discover_update_repositories(&base, discovery, output.clone())?;
     if repos.is_empty() {
         return Err(CiError::Message(format!(
-            "no Git repositories found under {}",
+            "no Git repositories found in {}",
             base.display()
         )));
     }
@@ -244,7 +258,44 @@ fn update_one_repo(ctx: &AppContext, args: &UpdateArgs) -> Result<i32> {
     Ok(0)
 }
 
-fn discover_git_repositories(base: &Path, output: &Output) -> Result<Vec<PathBuf>> {
+fn discover_update_repositories(
+    base: &Path,
+    discovery: UpdateRepositoryDiscovery,
+    output: Output,
+) -> Result<Vec<PathBuf>> {
+    match discovery {
+        UpdateRepositoryDiscovery::Single => Ok(vec![base.to_path_buf()]),
+        UpdateRepositoryDiscovery::Direct => discover_git_repositories_direct(base, &output),
+        UpdateRepositoryDiscovery::Recursive => discover_git_repositories_recursive(base, &output),
+    }
+}
+
+fn discover_git_repositories_direct(base: &Path, output: &Output) -> Result<Vec<PathBuf>> {
+    let mut repos = BTreeSet::new();
+    insert_git_repository_at(base, &mut repos);
+
+    if !base.is_dir() {
+        return Ok(repos.into_iter().collect());
+    }
+
+    for entry in fs::read_dir(base)? {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                output.warn(format!("skipping unreadable path: {err}"));
+                continue;
+            }
+        };
+        let path = entry.path();
+        if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+            insert_git_repository_at(&path, &mut repos);
+        }
+    }
+
+    Ok(repos.into_iter().collect())
+}
+
+fn discover_git_repositories_recursive(base: &Path, output: &Output) -> Result<Vec<PathBuf>> {
     let mut repos = BTreeSet::new();
     let mut walker = WalkDir::new(base).follow_links(false).into_iter();
     while let Some(entry) = walker.next() {
@@ -272,6 +323,12 @@ fn discover_git_repositories(base: &Path, output: &Output) -> Result<Vec<PathBuf
         }
     }
     Ok(repos.into_iter().collect())
+}
+
+fn insert_git_repository_at(path: &Path, repos: &mut BTreeSet<PathBuf>) {
+    if path_exists_or_symlink(&path.join(".git")) || looks_like_bare_git_repository(path) {
+        repos.insert(path.to_path_buf());
+    }
 }
 
 fn looks_like_bare_git_repository(path: &Path) -> bool {

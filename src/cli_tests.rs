@@ -89,6 +89,72 @@ fn unknown_command_rewrite_keeps_global_options_before_workflow() {
 }
 
 #[test]
+fn repo_aliases_work_before_rewritten_workflow() {
+    let cli = Cli::try_parse_from(rewrite(["ci", "--repository", "/tmp/project", "build"]))
+        .expect("parse");
+
+    assert_eq!(cli.global.repo, std::path::PathBuf::from("/tmp/project"));
+    match cli.command {
+        Commands::Run(args) => assert_eq!(args.workflow.as_deref(), Some("build")),
+        _ => panic!("expected run command"),
+    }
+}
+
+#[test]
+fn update_recursive_short_accepts_optional_path() {
+    let cli = Cli::try_parse_from(rewrite(["ci", "update", "-r", "/tmp/projects"])).expect("parse");
+
+    match cli.command {
+        Commands::Update(args) => {
+            assert!(args.selected_update());
+            assert!(args.recursive);
+            assert_eq!(
+                args.path.as_deref(),
+                Some(std::path::Path::new("/tmp/projects"))
+            );
+        }
+        _ => panic!("expected update command"),
+    }
+}
+
+#[test]
+fn update_all_accepts_optional_path() {
+    let cli =
+        Cli::try_parse_from(rewrite(["ci", "update", "--all", "/tmp/projects"])).expect("parse");
+
+    match cli.command {
+        Commands::Update(args) => {
+            assert!(args.selected_update());
+            assert!(args.all);
+            assert!(!args.recursive);
+            assert_eq!(
+                args.path.as_deref(),
+                Some(std::path::Path::new("/tmp/projects"))
+            );
+        }
+        _ => panic!("expected update command"),
+    }
+}
+
+#[test]
+fn update_path_targets_selected_repo() {
+    let cli = Cli::try_parse_from(rewrite(["ci", "update", "/tmp/projects"])).expect("parse");
+
+    match cli.command {
+        Commands::Update(args) => {
+            assert!(args.selected_update());
+            assert!(!args.all);
+            assert!(!args.recursive);
+            assert_eq!(
+                args.path.as_deref(),
+                Some(std::path::Path::new("/tmp/projects"))
+            );
+        }
+        _ => panic!("expected update command"),
+    }
+}
+
+#[test]
 fn run_accepts_build_args_after_workflow() {
     let cli = Cli::try_parse_from(rewrite([
         "ci",
