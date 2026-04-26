@@ -575,6 +575,8 @@ ci install --mode copy
 
 Copies the currently running `ci` binary into an arch-specific path such as `.git/ci/run.x64`.
 
+When no `--source` is set, copy mode installs only the current machine's architecture. That means you can run the same install once on an x64 machine and once on an arm64 machine to populate both `.git/ci/run.x64` and `.git/ci/run.arm64` without extra flags.
+
 Copy installs can use per-architecture sources:
 
 ```sh

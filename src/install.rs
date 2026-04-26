@@ -45,7 +45,8 @@ pub struct HookState {
 pub fn cmd_install(ctx: &AppContext, args: &InstallArgs) -> Result<i32> {
     let hooks = parse_hooks(args.hooks.as_deref(), ctx.repo.is_bare)?;
     let ci_bin_dir = managed_runner_dir(&ctx.repo);
-    let ci_bins = managed_runner_targets(&ctx.repo, &ctx.config.defaults.arch);
+    let target_arches = install_target_arches(args.source.as_deref(), &ctx.config.defaults.arch);
+    let ci_bins = managed_runner_targets(&ctx.repo, &target_arches);
     let hooks_dir = ctx.repo.git_dir.join("hooks");
 
     ctx.output
@@ -89,10 +90,14 @@ pub fn cmd_install(ctx: &AppContext, args: &InstallArgs) -> Result<i32> {
 }
 
 pub fn cmd_update(ctx: &AppContext, args: &UpdateArgs) -> Result<i32> {
-    let ci_bins = managed_runner_targets(&ctx.repo, &ctx.config.defaults.arch);
+    let target_arches = install_target_arches(args.source.as_deref(), &ctx.config.defaults.arch);
+    let ci_bins = managed_runner_targets(&ctx.repo, &target_arches);
+    let installed_ci_bins = managed_runner_paths(&ctx.repo, &ctx.config.defaults.arch);
     let legacy_ci_bin = legacy_managed_runner_path(&ctx.repo);
 
-    if !ci_bins.iter().any(|(_, path)| path_exists_or_symlink(path))
+    if !installed_ci_bins
+        .iter()
+        .any(|path| path_exists_or_symlink(path))
         && !path_exists_or_symlink(&legacy_ci_bin)
     {
         return Err(CiError::Message(format!(
@@ -327,6 +332,18 @@ fn install_source_for_arch(
     } else {
         source.to_path_buf()
     }
+}
+
+fn install_target_arches(source: Option<&Path>, configured: &[Architecture]) -> Vec<Architecture> {
+    if source.map(source_has_arch_template).unwrap_or(false) {
+        runner_arches(configured)
+    } else {
+        vec![Architecture::host()]
+    }
+}
+
+fn source_has_arch_template(source: &Path) -> bool {
+    source.to_string_lossy().contains("{arch}")
 }
 
 fn install_hook_dispatcher(path: &Path) -> Result<()> {

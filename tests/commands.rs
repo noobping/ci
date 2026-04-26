@@ -398,3 +398,33 @@ fn copy_install_can_use_per_arch_sources() {
     assert_eq!(repo.read(".git/ci/run.x64"), "x64");
     assert_eq!(repo.read(".git/ci/run.arm64"), "arm64");
 }
+
+#[test]
+fn copy_install_without_source_uses_host_arch_only() {
+    let repo = TestRepo::new();
+    let host_arch = match std::env::consts::ARCH {
+        "x86_64" | "amd64" => "x64",
+        "aarch64" | "arm64" => "arm64",
+        other => other,
+    };
+
+    let mut install = repo.ci();
+    install.args([
+        "--arch",
+        "x64,arm64",
+        "install",
+        "--mode",
+        "copy",
+        "--hooks",
+        "pre-push",
+    ]);
+    assert_success(output(install));
+
+    assert!(repo.exists(&format!(".git/ci/run.{host_arch}")));
+    if host_arch != "x64" {
+        assert!(!repo.exists(".git/ci/run.x64"));
+    }
+    if host_arch != "arm64" {
+        assert!(!repo.exists(".git/ci/run.arm64"));
+    }
+}
