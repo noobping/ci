@@ -176,6 +176,12 @@ pub struct InstallArgs {
     #[arg(long = "mode", default_value = "link")]
     pub mode: InstallMode,
 
+    #[arg(
+        long = "source",
+        help = "Binary source to install; use {arch} for per-architecture sources"
+    )]
+    pub source: Option<PathBuf>,
+
     #[arg(long = "hooks")]
     pub hooks: Option<String>,
 
@@ -215,7 +221,10 @@ pub struct UninstallArgs {
 
 #[derive(Clone, Debug, Args)]
 pub struct UpdateArgs {
-    #[arg(long = "source")]
+    #[arg(
+        long = "source",
+        help = "Binary source to install; use {arch} for per-architecture sources"
+    )]
     pub source: Option<PathBuf>,
 
     #[arg(long = "dry-run")]

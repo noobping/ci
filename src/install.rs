@@ -45,7 +45,7 @@ pub struct HookState {
 pub fn cmd_install(ctx: &AppContext, args: &InstallArgs) -> Result<i32> {
     let hooks = parse_hooks(args.hooks.as_deref(), ctx.repo.is_bare)?;
     let ci_bin_dir = managed_runner_dir(&ctx.repo);
-    let ci_bins = managed_runner_paths(&ctx.repo, &ctx.config.defaults.arch);
+    let ci_bins = managed_runner_targets(&ctx.repo, &ctx.config.defaults.arch);
     let hooks_dir = ctx.repo.git_dir.join("hooks");
 
     ctx.output
@@ -55,17 +55,21 @@ pub fn cmd_install(ctx: &AppContext, args: &InstallArgs) -> Result<i32> {
 
     if args.dry_run {
         println!("would create directory {}", ci_bin_dir.display());
-        for ci_bin in &ci_bins {
+        for (arch, ci_bin) in &ci_bins {
+            let source =
+                install_source_for_arch(&ctx.repo.current_exe, args.source.as_deref(), arch);
             println!(
                 "would install binary {} from {}",
                 ci_bin.display(),
-                ctx.repo.current_exe.display()
+                source.display()
             );
         }
     } else {
         fs::create_dir_all(&ci_bin_dir)?;
-        for ci_bin in &ci_bins {
-            install_binary(&ctx.repo.current_exe, ci_bin, &args.mode)?;
+        for (arch, ci_bin) in &ci_bins {
+            let source =
+                install_source_for_arch(&ctx.repo.current_exe, args.source.as_deref(), arch);
+            install_binary(&source, ci_bin, &args.mode)?;
         }
         install_hook_dispatcher(&managed_hook_dispatcher_path(&ctx.repo))?;
         fs::create_dir_all(&hooks_dir)?;
@@ -85,14 +89,10 @@ pub fn cmd_install(ctx: &AppContext, args: &InstallArgs) -> Result<i32> {
 }
 
 pub fn cmd_update(ctx: &AppContext, args: &UpdateArgs) -> Result<i32> {
-    let ci_bins = managed_runner_paths(&ctx.repo, &ctx.config.defaults.arch);
+    let ci_bins = managed_runner_targets(&ctx.repo, &ctx.config.defaults.arch);
     let legacy_ci_bin = legacy_managed_runner_path(&ctx.repo);
-    let source = args
-        .source
-        .clone()
-        .unwrap_or_else(|| ctx.repo.current_exe.clone());
 
-    if !ci_bins.iter().any(|path| path_exists_or_symlink(path))
+    if !ci_bins.iter().any(|(_, path)| path_exists_or_symlink(path))
         && !path_exists_or_symlink(&legacy_ci_bin)
     {
         return Err(CiError::Message(format!(
@@ -102,7 +102,9 @@ pub fn cmd_update(ctx: &AppContext, args: &UpdateArgs) -> Result<i32> {
     }
 
     if args.dry_run {
-        for ci_bin in &ci_bins {
+        for (arch, ci_bin) in &ci_bins {
+            let source =
+                install_source_for_arch(&ctx.repo.current_exe, args.source.as_deref(), arch);
             println!(
                 "would update {} from {}",
                 ci_bin.display(),
@@ -111,7 +113,9 @@ pub fn cmd_update(ctx: &AppContext, args: &UpdateArgs) -> Result<i32> {
         }
     } else {
         fs::create_dir_all(managed_runner_dir(&ctx.repo))?;
-        for ci_bin in &ci_bins {
+        for (arch, ci_bin) in &ci_bins {
+            let source =
+                install_source_for_arch(&ctx.repo.current_exe, args.source.as_deref(), arch);
             if is_symlink(ci_bin) {
                 remove_file_if_exists(ci_bin)?;
                 symlink(&source, ci_bin)?;
@@ -308,6 +312,23 @@ fn install_binary(source: &Path, target: &Path, mode: &InstallMode) -> Result<()
     Ok(())
 }
 
+fn install_source_for_arch(
+    default_source: &Path,
+    source: Option<&Path>,
+    arch: &Architecture,
+) -> PathBuf {
+    let Some(source) = source else {
+        return default_source.to_path_buf();
+    };
+
+    let value = source.to_string_lossy();
+    if value.contains("{arch}") {
+        PathBuf::from(value.replace("{arch}", &arch.runner_suffix()))
+    } else {
+        source.to_path_buf()
+    }
+}
+
 fn install_hook_dispatcher(path: &Path) -> Result<()> {
     let script = format!(
         "#!/usr/bin/env sh\n\
@@ -359,13 +380,31 @@ fn managed_hook_dispatcher_path(repo: &RepoInfo) -> PathBuf {
 }
 
 fn managed_runner_paths(repo: &RepoInfo, arches: &[Architecture]) -> Vec<PathBuf> {
-    if arches.is_empty() {
-        return vec![managed_runner_path(repo, &Architecture::host())];
-    }
-    arches
-        .iter()
-        .map(|arch| managed_runner_path(repo, arch))
+    managed_runner_targets(repo, arches)
+        .into_iter()
+        .map(|(_, path)| path)
         .collect()
+}
+
+fn managed_runner_targets(
+    repo: &RepoInfo,
+    arches: &[Architecture],
+) -> Vec<(Architecture, PathBuf)> {
+    runner_arches(arches)
+        .into_iter()
+        .map(|arch| {
+            let path = managed_runner_path(repo, &arch);
+            (arch, path)
+        })
+        .collect()
+}
+
+fn runner_arches(arches: &[Architecture]) -> Vec<Architecture> {
+    if arches.is_empty() {
+        vec![Architecture::host()]
+    } else {
+        arches.to_vec()
+    }
 }
 
 fn managed_runner_path(repo: &RepoInfo, arch: &Architecture) -> PathBuf {

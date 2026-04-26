@@ -575,13 +575,21 @@ ci install --mode copy
 
 Copies the currently running `ci` binary into an arch-specific path such as `.git/ci/run.x64`.
 
+Copy installs can use per-architecture sources:
+
+```sh
+ci --arch x64,arm64 install --mode copy --source 'dist/ci-linux-{arch}'
+```
+
+That installs `dist/ci-linux-x64` to `.git/ci/run.x64` and `dist/ci-linux-arm64` to `.git/ci/run.arm64`.
+
 ## Update
 
 ```sh
 ci update
 ```
 
-For link mode, this refreshes the runner symlink. For copy mode, this copies the current binary again. Managed hook files are symlinks to one shared dispatcher at `.git/ci/hook`.
+For link mode, this refreshes the runner symlink. For copy mode, this copies the current binary again. `ci update --source 'dist/ci-linux-{arch}'` uses the same per-architecture source template as install. Managed hook files are symlinks to one shared dispatcher at `.git/ci/hook`.
 
 ## Status and explain
 

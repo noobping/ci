@@ -373,3 +373,28 @@ fn install_and_uninstall_manage_hooks_and_runner_binary() {
 
     assert!(!repo.path().join(".git/hooks/pre-push").exists());
 }
+
+#[test]
+fn copy_install_can_use_per_arch_sources() {
+    let repo = TestRepo::new();
+    repo.write("dist/ci-linux-x64", "x64");
+    repo.write("dist/ci-linux-arm64", "arm64");
+    let source = repo.path().join("dist/ci-linux-{arch}");
+
+    let mut install = repo.ci();
+    install.args([
+        "--arch",
+        "x64,arm64",
+        "install",
+        "--mode",
+        "copy",
+        "--source",
+        source.to_str().expect("source path"),
+        "--hooks",
+        "pre-push",
+    ]);
+    assert_success(output(install));
+
+    assert_eq!(repo.read(".git/ci/run.x64"), "x64");
+    assert_eq!(repo.read(".git/ci/run.arm64"), "arm64");
+}
