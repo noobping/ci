@@ -23,7 +23,13 @@ pub struct Cli {
 
 #[derive(Clone, Debug, Args)]
 pub struct GlobalOptions {
-    #[arg(short = 'v', long = "verbose", action = ArgAction::Count, global = true)]
+    #[arg(
+        short = 'v',
+        long = "verbose",
+        action = ArgAction::Count,
+        global = true,
+        help = "Increase output detail; repeat for more verbosity"
+    )]
     pub verbose: u8,
 
     #[arg(
@@ -41,22 +47,45 @@ pub struct GlobalOptions {
     )]
     pub silent: bool,
 
-    #[arg(long = "repo", global = true, default_value = ".")]
+    #[arg(
+        long = "repo",
+        global = true,
+        default_value = ".",
+        help = "Repository root to operate on"
+    )]
     pub repo: PathBuf,
 
-    #[arg(long = "ci-dir", global = true, default_value = ".ci")]
+    #[arg(
+        long = "ci-dir",
+        global = true,
+        default_value = ".ci",
+        help = "Directory containing native ci workflows"
+    )]
     pub ci_dir: PathBuf,
 
-    #[arg(long = "config", global = true)]
+    #[arg(long = "config", global = true, help = "Use an explicit config file")]
     pub config: Option<PathBuf>,
 
-    #[arg(long = "color", global = true, default_value_t = ColorWhen::Auto)]
+    #[arg(
+        long = "color",
+        global = true,
+        default_value_t = ColorWhen::Auto,
+        help = "Control colored output"
+    )]
     pub color: ColorWhen,
 
-    #[arg(long = "git-mode", global = true)]
+    #[arg(
+        long = "git-mode",
+        global = true,
+        help = "Choose how git commands are executed"
+    )]
     pub git_mode: Option<GitMode>,
 
-    #[arg(long = "git-image", global = true)]
+    #[arg(
+        long = "git-image",
+        global = true,
+        help = "Container image used when git runs in a container"
+    )]
     pub git_image: Option<String>,
 
     #[arg(
@@ -77,7 +106,12 @@ pub struct GlobalOptions {
     )]
     pub no_container: bool,
 
-    #[arg(long = "arch", global = true, value_delimiter = ',')]
+    #[arg(
+        long = "arch",
+        global = true,
+        value_delimiter = ',',
+        help = "Select target architectures, comma-separated or repeated"
+    )]
     pub arch: Vec<Architecture>,
 
     #[arg(
@@ -93,23 +127,33 @@ pub struct GlobalOptions {
 
 #[derive(Clone, Debug, Subcommand)]
 pub enum Commands {
+    #[command(about = "Run one or more workflows")]
     Run(RunArgs),
-    #[command(alias = "ls")]
+    #[command(alias = "ls", about = "List discovered workflows")]
     List(ListArgs),
+    #[command(about = "Install ci into a repository as Git hooks")]
     Install(InstallArgs),
-    #[command(alias = "remove")]
+    #[command(alias = "remove", about = "Remove ci-managed Git hooks and runners")]
     Uninstall(UninstallArgs),
+    #[command(about = "Refresh the installed ci runner binary")]
     Update(UpdateArgs),
+    #[command(about = "Run workflows for a Git hook invocation")]
     Hook(HookArgs),
-    #[command(alias = "doctor")]
+    #[command(alias = "doctor", about = "Show repository and ci diagnostics")]
     Status(StatusArgs),
+    #[command(about = "Explain why workflows would run")]
     Explain(ExplainArgs),
+    #[command(about = "Print JSON schemas for config and workflow files")]
     Schema(SchemaArgs),
+    #[command(about = "Export, keep, or remove recorded artifacts")]
     Clean(CleanArgs),
+    #[command(about = "Generate shell completion scripts")]
     Completion(CompletionArgs),
+    #[command(about = "Generate manual pages")]
     Man(ManArgs),
+    #[command(about = "Create an initial native build workflow")]
     Init(InitArgs),
-    #[command(name = "self")]
+    #[command(name = "self", about = "Print information about the ci binary")]
     SelfCmd(SelfArgs),
 }
 
@@ -140,7 +184,7 @@ impl ListArgs {
 
 #[derive(Clone, Debug, Args)]
 pub struct RunArgs {
-    #[arg(value_name = "WORKFLOW")]
+    #[arg(value_name = "WORKFLOW", help = "Workflow name to run")]
     pub workflow: Option<String>,
 
     #[arg(
@@ -151,10 +195,14 @@ pub struct RunArgs {
     )]
     pub args: Vec<String>,
 
-    #[arg(long = "event", default_value = "manual")]
+    #[arg(
+        long = "event",
+        default_value = "manual",
+        help = "Event name used to select workflows"
+    )]
     pub event: String,
 
-    #[arg(long = "all")]
+    #[arg(long = "all", help = "Run all workflows selected by the event")]
     pub all: bool,
 
     #[arg(
@@ -173,28 +221,40 @@ pub struct RunArgs {
     )]
     pub no_dry_run: bool,
 
-    #[arg(long = "fail-fast")]
+    #[arg(long = "fail-fast", help = "Stop after the first failing workflow")]
     pub fail_fast: bool,
 
-    #[arg(long = "keep-going")]
+    #[arg(
+        long = "keep-going",
+        help = "Continue running later workflows after failures"
+    )]
     pub keep_going: bool,
 
-    #[arg(long = "container-runtime")]
+    #[arg(
+        long = "container-runtime",
+        help = "Container runtime to use for containerized workflows"
+    )]
     pub container_runtime: Option<ContainerRuntime>,
 
-    #[arg(long = "respect-branches")]
+    #[arg(
+        long = "respect-branches",
+        help = "Apply branch filters during manual runs"
+    )]
     pub respect_branches: bool,
 
-    #[arg(long = "no-recursive-checkout")]
+    #[arg(
+        long = "no-recursive-checkout",
+        help = "Skip configured recursive submodule checkout before running"
+    )]
     pub no_recursive_checkout: bool,
 
-    #[arg(long = "lock")]
+    #[arg(long = "lock", help = "Serialize this run with the repository ci lock")]
     pub lock: bool,
 }
 
 #[derive(Clone, Debug, Args)]
 pub struct InstallArgs {
-    #[arg(long = "mode")]
+    #[arg(long = "mode", help = "Install mode for hook runners")]
     pub mode: Option<InstallMode>,
 
     #[arg(
@@ -203,34 +263,37 @@ pub struct InstallArgs {
     )]
     pub source: Option<PathBuf>,
 
-    #[arg(long = "hooks")]
+    #[arg(long = "hooks", help = "Hooks to manage, comma-separated, or `all`")]
     pub hooks: Option<String>,
 
-    #[arg(long = "bare")]
+    #[arg(long = "bare", help = "Install into a bare repository")]
     pub bare: bool,
 
-    #[arg(long = "force")]
+    #[arg(long = "force", help = "Overwrite existing unmanaged hook files")]
     pub force: bool,
 
-    #[arg(long = "backup-existing")]
+    #[arg(
+        long = "backup-existing",
+        help = "Back up existing hooks before replacing them"
+    )]
     pub backup_existing: bool,
 
-    #[arg(long = "dry-run")]
+    #[arg(long = "dry-run", help = "Show what would be installed")]
     pub dry_run: bool,
 }
 
 #[derive(Clone, Debug, Args)]
 pub struct UninstallArgs {
-    #[arg(long = "hooks")]
+    #[arg(long = "hooks", help = "Hooks to remove, comma-separated, or `all`")]
     pub hooks: Option<String>,
 
-    #[arg(long = "keep-binary")]
+    #[arg(long = "keep-binary", help = "Keep the installed runner binary")]
     pub keep_binary: bool,
 
-    #[arg(long = "restore")]
+    #[arg(long = "restore", help = "Restore backups for removed hooks")]
     pub restore: bool,
 
-    #[arg(long = "dry-run")]
+    #[arg(long = "dry-run", help = "Show what would be removed")]
     pub dry_run: bool,
 }
 
@@ -242,15 +305,21 @@ pub struct UpdateArgs {
     )]
     pub source: Option<PathBuf>,
 
-    #[arg(long = "dry-run")]
+    #[arg(long = "dry-run", help = "Show what would be updated")]
     pub dry_run: bool,
 }
 
 #[derive(Clone, Debug, Args)]
 pub struct HookArgs {
+    #[arg(value_name = "HOOK", help = "Git hook name being invoked")]
     pub hook: String,
 
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    #[arg(
+        value_name = "ARG",
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        help = "Arguments passed by Git to the hook"
+    )]
     pub hook_args: Vec<String>,
 }
 
@@ -259,35 +328,44 @@ pub struct StatusArgs {}
 
 #[derive(Clone, Debug, Args)]
 pub struct ExplainArgs {
+    #[arg(value_name = "WORKFLOW", help = "Workflow name or subject to explain")]
     pub subject: String,
 }
 
 #[derive(Clone, Debug, Args)]
 pub struct SchemaArgs {
-    #[arg(value_name = "config|workflow|all")]
+    #[arg(value_name = "config|workflow|all", help = "Schema subject to print")]
     pub subject: Option<String>,
 }
 
 #[derive(Clone, Debug, Args)]
 pub struct CleanArgs {
+    #[arg(
+        value_name = "WORKFLOW",
+        help = "Workflow whose artifacts should be cleaned"
+    )]
     pub workflow: Option<String>,
 
-    #[arg(long = "run-id")]
+    #[arg(long = "run-id", help = "Clean artifacts from a specific run id")]
     pub run_id: Option<String>,
 
-    #[arg(long = "mode", default_value = "keep")]
+    #[arg(
+        long = "mode",
+        default_value = "keep",
+        help = "How to handle matched artifacts"
+    )]
     pub mode: ArtifactMode,
 
-    #[arg(long = "dest")]
+    #[arg(long = "dest", help = "Destination for exported artifacts")]
     pub dest: Option<PathBuf>,
 
-    #[arg(long = "dry-run")]
+    #[arg(long = "dry-run", help = "Show what would be cleaned")]
     pub dry_run: bool,
 }
 
 #[derive(Clone, Debug, Args)]
 pub struct InitArgs {
-    #[arg(long = "force")]
+    #[arg(long = "force", help = "Replace an existing .ci/build.yml")]
     pub force: bool,
 }
 
@@ -298,16 +376,16 @@ pub enum CompletionShell {
 
 #[derive(Clone, Debug, Args)]
 pub struct CompletionArgs {
-    #[arg(value_enum)]
+    #[arg(value_enum, help = "Shell to generate completions for")]
     pub shell: CompletionShell,
 
-    #[arg(long = "output")]
+    #[arg(long = "output", help = "Write completions to a file")]
     pub output: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Args)]
 pub struct ManArgs {
-    #[arg(long = "dir")]
+    #[arg(long = "dir", help = "Directory to write generated man pages into")]
     pub dir: Option<PathBuf>,
 }
 

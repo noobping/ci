@@ -1,6 +1,6 @@
 use std::ffi::OsString;
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 
 use crate::config::ContainerType;
 
@@ -40,6 +40,21 @@ fn list_porcelain_flags_override_auto_detection() {
 #[test]
 fn list_porcelain_flags_conflict() {
     assert!(Cli::try_parse_from(["ci", "list", "--porcelain", "--no-porcelain"]).is_err());
+}
+
+#[test]
+fn commands_and_options_have_help_text() {
+    let command = Cli::command();
+    for subcommand in command.get_subcommands() {
+        if subcommand.get_name() != "help" {
+            assert!(
+                subcommand.get_about().is_some(),
+                "{} is missing command help text",
+                subcommand.get_name()
+            );
+        }
+        assert_options_have_help(subcommand);
+    }
 }
 
 #[test]
@@ -228,4 +243,22 @@ fn tech_stack_flag_is_global_and_has_aliases() {
 
 fn rewrite<const N: usize>(argv: [&str; N]) -> Vec<OsString> {
     rewrite_argv(argv.into_iter().map(OsString::from).collect())
+}
+
+fn assert_options_have_help(command: &clap::Command) {
+    for arg in command.get_arguments() {
+        let id = arg.get_id().as_str();
+        if matches!(id, "help" | "version") {
+            continue;
+        }
+        assert!(
+            arg.get_help().is_some(),
+            "{} option `{id}` is missing help text",
+            command.get_name()
+        );
+    }
+
+    for subcommand in command.get_subcommands() {
+        assert_options_have_help(subcommand);
+    }
 }
