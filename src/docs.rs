@@ -87,6 +87,12 @@ Native workflows may be YAML files, executable files, or Containerfile/Dockerfil
 If no workflow exists, ci can auto-detect a basic build workflow for common stacks.
 .SH FILES
 .TP
+.B /etc/ci.yml
+System settings and defaults.
+.TP
+.B ~/.config/ci/config.yml
+User settings and defaults.
+.TP
 .B .ci/config.yml
 Project settings and defaults.
 .TP
@@ -116,7 +122,7 @@ ci install --mode link --hooks pre-commit,pre-push
 ci man --dir ~/.local/share/man/man1
 .EE
 .SH PRECEDENCE
-CLI flags override workflow fields, workflow fields override workflow defaults, workflow defaults override .ci/config.yml, and config overrides auto-detection.
+CLI flags override workflow fields, workflow fields override workflow defaults, workflow defaults override project config, project config overrides user config, user config overrides system config, and config overrides auto-detection.
 .SH NATIVE WORKFLOW EXAMPLE
 .EX
 name: build
@@ -216,6 +222,7 @@ ci install --backup-existing
 Link mode creates architecture-specific runners such as .git/ci/run.x64.
 Link mode always links to the current ci executable and removes other managed run.<arch> files.
 Copy mode copies the current ci binary into the repository. Hooks are direct symlinks with one runner and small selector scripts with multiple runners.
+The install_mode config default accepts link or copy and is used when --mode is omitted.
 "#,
         ),
         "ci-uninstall" => Some(

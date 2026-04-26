@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use clap::{ArgAction, Args, Parser, Subcommand};
 
 use crate::config::{
-    Architecture, ArtifactMode, ColorWhen, ContainerRuntime, ContainerType, GitMode,
+    Architecture, ArtifactMode, ColorWhen, ContainerRuntime, ContainerType, GitMode, InstallMode,
 };
 use crate::workflow::is_known_hook;
 
@@ -173,8 +173,8 @@ pub struct RunArgs {
 
 #[derive(Clone, Debug, Args)]
 pub struct InstallArgs {
-    #[arg(long = "mode", default_value = "link")]
-    pub mode: InstallMode,
+    #[arg(long = "mode")]
+    pub mode: Option<InstallMode>,
 
     #[arg(
         long = "source",
@@ -196,12 +196,6 @@ pub struct InstallArgs {
 
     #[arg(long = "dry-run")]
     pub dry_run: bool,
-}
-
-#[derive(Clone, Debug, clap::ValueEnum)]
-pub enum InstallMode {
-    Link,
-    Copy,
 }
 
 #[derive(Clone, Debug, Args)]

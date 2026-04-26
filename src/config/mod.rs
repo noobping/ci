@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -11,7 +12,7 @@ mod validation;
 
 pub use self::types::{
     format_arches, ArchFilter, Architecture, ArtifactConfig, ArtifactMode, ColorWhen,
-    ContainerRuntime, ContainerType, EventFilter, GitMode,
+    ContainerRuntime, ContainerType, EventFilter, GitMode, InstallMode,
 };
 use self::validation::validate_config_keys;
 use crate::error::Result;
@@ -121,6 +122,8 @@ pub struct DefaultsConfig {
     pub git_mode: Option<GitMode>,
     #[serde(alias = "git-image")]
     pub git_image: Option<String>,
+    #[serde(alias = "install-mode")]
+    pub install_mode: Option<InstallMode>,
     #[serde(alias = "recursive-checkout")]
     pub recursive_checkout: Option<bool>,
     #[serde(alias = "artifact-store")]
@@ -161,6 +164,7 @@ pub struct Defaults {
     pub container_runtime: ContainerRuntime,
     pub git_mode: GitMode,
     pub git_image: String,
+    pub install_mode: InstallMode,
     pub recursive_checkout: bool,
     pub branch_allow: Vec<String>,
     pub artifact_store: PathBuf,
@@ -172,6 +176,7 @@ pub struct Defaults {
 pub struct ResolvedConfig {
     pub path: PathBuf,
     pub loaded: bool,
+    pub paths: Vec<PathBuf>,
     pub global_tech_stack: Option<ContainerType>,
     pub defaults: Defaults,
     pub hooks: BTreeMap<String, WorkflowOverride>,
@@ -181,20 +186,23 @@ pub struct ResolvedConfig {
 
 impl ResolvedConfig {
     pub fn load(repo: &RepoInfo, global: &GlobalOptions) -> Result<Self> {
-        let path = global
+        let default_path = global
             .config
             .clone()
             .unwrap_or_else(|| repo.ci_dir.join("config.yml"));
-        let loaded = path.exists();
-        let file: ConfigFile = if loaded {
-            let raw = fs::read_to_string(&path)?;
-            let value: Value = serde_yaml::from_str(&raw)?;
-            validate_config_keys(&value, &path)?;
-            serde_yaml::from_str(&raw)?
+        let candidates = if let Some(path) = &global.config {
+            vec![path.clone()]
         } else {
-            ConfigFile::default()
+            default_config_paths(repo)
         };
 
+        let loaded_files = load_config_files(&candidates)?;
+        let loaded = !loaded_files.is_empty();
+        let paths = loaded_files
+            .iter()
+            .map(|(path, _)| path.clone())
+            .collect::<Vec<_>>();
+        let file = merge_config_files(loaded_files.into_iter().map(|(_, file)| file));
         let file_defaults = file.root_defaults.merge(&file.defaults);
 
         let defaults = Defaults {
@@ -219,6 +227,7 @@ impl ResolvedConfig {
                 .clone()
                 .or_else(|| file_defaults.git_image.clone())
                 .unwrap_or_else(|| DEFAULT_GIT_IMAGE.to_string()),
+            install_mode: file_defaults.install_mode.unwrap_or_default(),
             recursive_checkout: file_defaults.recursive_checkout.unwrap_or(true),
             branch_allow: if file_defaults.branches.allow.is_empty() {
                 DEFAULT_BRANCHES
@@ -244,8 +253,9 @@ impl ResolvedConfig {
         };
 
         Ok(Self {
-            path,
+            path: default_path,
             loaded,
+            paths,
             global_tech_stack: global.tech_stack,
             defaults,
             hooks: file.hooks,
@@ -261,6 +271,82 @@ impl ResolvedConfig {
     pub fn hook_override(&self, event: &str) -> WorkflowOverride {
         self.hooks.get(event).cloned().unwrap_or_default()
     }
+}
+
+fn load_config_files(paths: &[PathBuf]) -> Result<Vec<(PathBuf, ConfigFile)>> {
+    let mut loaded = Vec::new();
+    for path in paths {
+        if !path.exists() {
+            continue;
+        }
+
+        let raw = fs::read_to_string(path)?;
+        let value: Value = serde_yaml::from_str(&raw)?;
+        validate_config_keys(&value, path)?;
+        loaded.push((path.clone(), serde_yaml::from_str(&raw)?));
+    }
+    Ok(loaded)
+}
+
+fn merge_config_files(files: impl IntoIterator<Item = ConfigFile>) -> ConfigFile {
+    let mut merged = ConfigFile::default();
+    for file in files {
+        merged.root_defaults = merged
+            .root_defaults
+            .merge(&file.root_defaults.merge(&file.defaults));
+        merge_workflow_maps(&mut merged.hooks, file.hooks);
+        merge_workflow_maps(&mut merged.workflows, file.workflows);
+        merged.actions = merged.actions.merge(&file.actions);
+    }
+    merged
+}
+
+fn merge_workflow_maps(
+    merged: &mut BTreeMap<String, WorkflowOverride>,
+    next: BTreeMap<String, WorkflowOverride>,
+) {
+    for (name, workflow) in next {
+        merged
+            .entry(name)
+            .and_modify(|existing| *existing = existing.merge(&workflow))
+            .or_insert(workflow);
+    }
+}
+
+fn default_config_paths(repo: &RepoInfo) -> Vec<PathBuf> {
+    let mut paths = vec![
+        PathBuf::from("/etc/ci.yml"),
+        PathBuf::from("/etc/ci.yaml"),
+        PathBuf::from("/etc/ci/config.yml"),
+        PathBuf::from("/etc/ci/config.yaml"),
+    ];
+    paths.extend(user_config_paths());
+    paths.push(repo.ci_dir.join("config.yml"));
+    paths.push(repo.ci_dir.join("config.yaml"));
+    paths
+}
+
+fn user_config_paths() -> Vec<PathBuf> {
+    if let Some(config_home) =
+        env::var_os("XDG_CONFIG_HOME").filter(|value| !value.as_os_str().is_empty())
+    {
+        let config_home = PathBuf::from(config_home);
+        return vec![
+            config_home.join("ci/config.yml"),
+            config_home.join("ci/config.yaml"),
+        ];
+    }
+
+    env::var_os("HOME")
+        .filter(|value| !value.as_os_str().is_empty())
+        .map(|home| {
+            let config_home = PathBuf::from(home).join(".config");
+            vec![
+                config_home.join("ci/config.yml"),
+                config_home.join("ci/config.yaml"),
+            ]
+        })
+        .unwrap_or_default()
 }
 
 fn selected_arches(global: &[Architecture], configured: &ArchFilter) -> Vec<Architecture> {
@@ -300,6 +386,7 @@ impl DefaultsConfig {
             container_runtime: other.container_runtime.or(self.container_runtime),
             git_mode: other.git_mode.or(self.git_mode),
             git_image: other.git_image.clone().or_else(|| self.git_image.clone()),
+            install_mode: other.install_mode.or(self.install_mode),
             recursive_checkout: other.recursive_checkout.or(self.recursive_checkout),
             artifact_store: other
                 .artifact_store
@@ -310,6 +397,14 @@ impl DefaultsConfig {
                 .clone()
                 .or_else(|| self.actions_cache.clone()),
             branches: self.branches.merge(&other.branches),
+        }
+    }
+}
+
+impl ActionsConfig {
+    pub fn merge(&self, other: &Self) -> Self {
+        Self {
+            node_image: other.node_image.clone().or_else(|| self.node_image.clone()),
         }
     }
 }

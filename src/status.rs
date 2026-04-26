@@ -26,14 +26,19 @@ pub fn cmd_status(ctx: &AppContext, _args: &StatusArgs) -> crate::error::Result<
     println!("Bare repo:  {}", ctx.repo.is_bare);
     println!("Git mode:   {:?}", ctx.git.mode());
     println!("Arch:       {}", format_arches(&ctx.config.defaults.arch));
-    println!(
-        "Config:     {}",
-        if ctx.config.loaded {
-            ctx.config.path.display().to_string()
-        } else {
-            format!("{} (default)", ctx.config.path.display())
-        }
-    );
+    if ctx.config.loaded {
+        println!(
+            "Config:     {}",
+            ctx.config
+                .paths
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    } else {
+        println!("Config:     {} (default)", ctx.config.path.display());
+    }
     println!();
 
     if ctx.repo.ci_dir.exists() {
@@ -188,7 +193,9 @@ pub fn cmd_explain(ctx: &AppContext, args: &ExplainArgs) -> crate::error::Result
         return Ok(0);
     }
 
-    println!("Precedence: CLI flags > workflow fields > workflow defaults > config > auto-detect");
+    println!(
+        "Precedence: CLI flags > workflow fields > workflow defaults > project config > user config > system config > auto-detect"
+    );
     for item in matches {
         let container_arches = item.resolved.container.arch.to_vec();
         let arches = if !ctx.global.arch.is_empty() || container_arches.is_empty() {

@@ -135,6 +135,14 @@ pub enum GitMode {
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
+pub enum InstallMode {
+    #[default]
+    Link,
+    Copy,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
+#[serde(rename_all = "kebab-case")]
 pub enum ArtifactMode {
     #[default]
     Keep,

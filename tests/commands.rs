@@ -389,6 +389,28 @@ steps:
 }
 
 #[test]
+fn install_uses_configured_default_mode_when_mode_flag_is_omitted() {
+    let repo = TestRepo::new();
+    let host_arch = host_runner_suffix();
+    repo.write(".ci/config.yml", "install-mode: copy\n");
+
+    let mut install = repo.ci();
+    install.args(["install", "--hooks", "pre-push"]);
+    assert_success(output(install));
+
+    assert!(
+        !fs::symlink_metadata(repo.path().join(format!(".git/ci/run.{host_arch}")))
+            .expect("runner metadata")
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(
+        fs::read_link(repo.path().join(".git/hooks/pre-push")).expect("read hook symlink"),
+        std::path::PathBuf::from(format!("../ci/run.{host_arch}"))
+    );
+}
+
+#[test]
 fn copy_install_can_use_per_arch_sources() {
     let repo = TestRepo::new();
     repo.write("dist/ci-linux-x64", "x64");

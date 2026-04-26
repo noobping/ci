@@ -3,8 +3,8 @@ use std::fs;
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use crate::cli::{InstallArgs, InstallMode, UninstallArgs, UpdateArgs};
-use crate::config::Architecture;
+use crate::cli::{InstallArgs, UninstallArgs, UpdateArgs};
+use crate::config::{Architecture, InstallMode};
 use crate::error::{CiError, Result};
 use crate::repo::RepoInfo;
 use crate::runner::AppContext;
@@ -52,19 +52,16 @@ pub struct HookState {
 pub fn cmd_install(ctx: &AppContext, args: &InstallArgs) -> Result<i32> {
     let hooks = parse_hooks(args.hooks.as_deref(), ctx.repo.is_bare)?;
     let ci_bin_dir = managed_runner_dir(&ctx.repo);
-    let source = install_source_for_mode(&args.mode, args.source.as_deref());
-    let target_arches = install_target_arches_for_mode(
-        &args.mode,
-        args.source.as_deref(),
-        &ctx.config.defaults.arch,
-    );
+    let mode = args.mode.unwrap_or(ctx.config.defaults.install_mode);
+    let source = install_source_for_mode(&mode, args.source.as_deref());
+    let target_arches =
+        install_target_arches_for_mode(&mode, args.source.as_deref(), &ctx.config.defaults.arch);
     let ci_bins = managed_runner_targets(&ctx.repo, &target_arches);
     let hooks_dir = ctx.repo.git_dir.join("hooks");
 
     ctx.output
         .info(format!("Installing ci into {}", ctx.repo.git_dir.display()));
-    ctx.output
-        .info(format!("Mode: {:?}", args.mode).to_lowercase());
+    ctx.output.info(format!("Mode: {mode:?}").to_lowercase());
 
     if args.dry_run {
         println!("would create directory {}", ci_bin_dir.display());
@@ -76,7 +73,7 @@ pub fn cmd_install(ctx: &AppContext, args: &InstallArgs) -> Result<i32> {
                 source.display()
             );
         }
-        if matches!(args.mode, InstallMode::Link) {
+        if matches!(mode, InstallMode::Link) {
             for stale_runner in stale_managed_runner_paths(&ctx.repo, &target_arches) {
                 println!("would remove stale binary {}", stale_runner.display());
             }
@@ -85,16 +82,16 @@ pub fn cmd_install(ctx: &AppContext, args: &InstallArgs) -> Result<i32> {
         fs::create_dir_all(&ci_bin_dir)?;
         for (arch, ci_bin) in &ci_bins {
             let source = install_source_for_arch(&ctx.repo.current_exe, source, arch);
-            install_binary(&source, ci_bin, &args.mode)?;
+            install_binary(&source, ci_bin, &mode)?;
         }
-        if matches!(args.mode, InstallMode::Link) {
+        if matches!(mode, InstallMode::Link) {
             remove_stale_managed_runners(&ctx.repo, &target_arches)?;
         }
         remove_file_if_exists(&managed_hook_dispatcher_path(&ctx.repo))?;
         fs::create_dir_all(&hooks_dir)?;
     }
 
-    let hook_strategy = install_hook_strategy(&ctx.repo, &args.mode, &target_arches);
+    let hook_strategy = install_hook_strategy(&ctx.repo, &mode, &target_arches);
 
     for hook in hooks {
         let hook_path = hooks_dir.join(hook);

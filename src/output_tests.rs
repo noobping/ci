@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use crate::cli::GlobalOptions;
 use crate::config::{
-    Architecture, ColorWhen, ContainerConfig, ContainerRuntime, Defaults, GitMode,
+    Architecture, ColorWhen, ContainerConfig, ContainerRuntime, Defaults, GitMode, InstallMode,
 };
 
 use super::{Output, Verbosity};
@@ -96,6 +96,7 @@ fn defaults(quiet: bool, silent: bool) -> Defaults {
         container_runtime: ContainerRuntime::Auto,
         git_mode: GitMode::Auto,
         git_image: "docker.io/alpine/git:latest".to_string(),
+        install_mode: InstallMode::Link,
         recursive_checkout: true,
         branch_allow: Vec::new(),
         artifact_store: PathBuf::from("artifacts"),
