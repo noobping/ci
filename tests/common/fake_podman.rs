@@ -91,6 +91,34 @@ exit 0
     bin_dir
 }
 
+pub fn make_fake_flatpak_spawn(dir: &Path, host_bin: &Path) -> PathBuf {
+    let bin_dir = dir.join("flatpak-bin");
+    fs::create_dir_all(&bin_dir).expect("create fake flatpak bin dir");
+    let flatpak_spawn = bin_dir.join("flatpak-spawn");
+    fs::write(
+        &flatpak_spawn,
+        format!(
+            r#"#!/bin/sh
+set -eu
+if [ "${{1:-}}" = "--host" ]; then
+  shift
+fi
+PATH={}:$PATH
+export PATH
+exec "$@"
+"#,
+            shell_quote(host_bin)
+        ),
+    )
+    .expect("write fake flatpak-spawn");
+    let mut permissions = fs::metadata(&flatpak_spawn)
+        .expect("fake flatpak-spawn metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&flatpak_spawn, permissions).expect("make fake flatpak-spawn executable");
+    bin_dir
+}
+
 pub fn path_with_fake_bin(fake_bin: &Path) -> String {
     let current = std::env::var_os("PATH").unwrap_or_default();
     let mut paths = vec![fake_bin.to_path_buf()];

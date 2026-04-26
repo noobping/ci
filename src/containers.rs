@@ -5,7 +5,7 @@ use std::process::{Command, Stdio};
 use crate::actions::ActionService;
 use crate::config::{Architecture, ContainerRuntime};
 use crate::error::{CiError, Result};
-use crate::git::{command_exists, preferred_container_runtime, sanitize_component};
+use crate::git::{command_exists, flatpak_host_command_exists, sanitize_component};
 use crate::workflow::ResolvedWorkflow;
 
 pub(crate) struct ContainerShellSpec<'a> {
@@ -31,24 +31,88 @@ pub(crate) struct ContainerCommandExistsSpec<'a> {
 }
 
 pub(crate) struct ContainerBackend {
-    runtime: String,
+    runtime: ContainerRuntimeName,
+    command: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ContainerRuntimeName {
+    Podman,
+    Docker,
+}
+
+impl ContainerRuntimeName {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Podman => "podman",
+            Self::Docker => "docker",
+        }
+    }
 }
 
 impl ContainerBackend {
     pub(crate) fn detect(runtime: ContainerRuntime) -> Result<Self> {
-        let runtime = match runtime {
-            ContainerRuntime::Podman => "podman".to_string(),
-            ContainerRuntime::Docker => "docker".to_string(),
-            ContainerRuntime::Auto => preferred_container_runtime(),
-        };
-
-        if !command_exists(&runtime) {
-            return Err(CiError::Message(format!(
-                "container runtime `{runtime}` is not available"
-            )));
+        match runtime {
+            ContainerRuntime::Podman => Self::detect_named(ContainerRuntimeName::Podman),
+            ContainerRuntime::Docker => Self::detect_named(ContainerRuntimeName::Docker),
+            ContainerRuntime::Auto => Self::detect_auto(),
         }
+    }
 
-        Ok(Self { runtime })
+    pub(crate) fn preferred_runtime_label() -> Option<String> {
+        Self::detect(ContainerRuntime::Auto)
+            .ok()
+            .map(|backend| backend.render_runtime())
+    }
+
+    fn detect_auto() -> Result<Self> {
+        Self::detect_available(ContainerRuntimeName::Podman)
+            .or_else(|| Self::detect_available(ContainerRuntimeName::Docker))
+            .ok_or_else(|| {
+                CiError::Message(
+                    "container runtime `podman` or `docker` is not available".to_string(),
+                )
+            })
+    }
+
+    fn detect_named(runtime: ContainerRuntimeName) -> Result<Self> {
+        Self::detect_available(runtime).ok_or_else(|| {
+            CiError::Message(format!(
+                "container runtime `{}` is not available",
+                runtime.as_str()
+            ))
+        })
+    }
+
+    fn detect_available(runtime: ContainerRuntimeName) -> Option<Self> {
+        let runtime_name = runtime.as_str();
+        if command_exists(runtime_name) {
+            return Some(Self {
+                runtime,
+                command: vec![runtime_name.to_string()],
+            });
+        }
+        if flatpak_host_command_exists(runtime_name) {
+            return Some(Self {
+                runtime,
+                command: vec![
+                    "flatpak-spawn".to_string(),
+                    "--host".to_string(),
+                    runtime_name.to_string(),
+                ],
+            });
+        }
+        None
+    }
+
+    fn command(&self) -> Command {
+        let mut command = Command::new(&self.command[0]);
+        command.args(&self.command[1..]);
+        command
+    }
+
+    fn render_runtime(&self) -> String {
+        self.command.join(" ")
     }
 
     pub(crate) fn build(
@@ -58,8 +122,8 @@ impl ContainerBackend {
         tag: &str,
         platform: Option<&str>,
     ) -> Result<i32> {
-        let mut command = Command::new(&self.runtime);
-        if self.runtime == "docker" && platform.is_some() {
+        let mut command = self.command();
+        if self.runtime == ContainerRuntimeName::Docker && platform.is_some() {
             command.arg("buildx").arg("build").arg("--load");
         } else {
             command.arg("build");
@@ -96,7 +160,7 @@ impl ContainerBackend {
                 }
             });
 
-        let mut command = Command::new(&self.runtime);
+        let mut command = self.command();
         command
             .arg("run")
             .arg("--rm")
@@ -142,7 +206,7 @@ impl ContainerBackend {
         name: &str,
     ) -> Result<bool> {
         let mount = self.bind_mount(spec.repo_root, "/work", false);
-        let mut command = Command::new(&self.runtime);
+        let mut command = self.command();
         command
             .arg("run")
             .arg("--rm")
@@ -182,7 +246,7 @@ impl ContainerBackend {
         platform: Option<&str>,
     ) -> Result<i32> {
         let mount = self.bind_mount(action_dir, "/action", false);
-        let mut command = Command::new(&self.runtime);
+        let mut command = self.command();
         command
             .arg("run")
             .arg("--rm")
@@ -218,7 +282,7 @@ impl ContainerBackend {
         service: &ActionService,
         platform: Option<&str>,
     ) -> Result<()> {
-        let mut command = Command::new(&self.runtime);
+        let mut command = self.command();
         command
             .arg("run")
             .arg("-d")
@@ -251,7 +315,8 @@ impl ContainerBackend {
     }
 
     pub(crate) fn stop_container(&self, name: &str) -> Result<()> {
-        let status = Command::new(&self.runtime)
+        let status = self
+            .command()
             .arg("rm")
             .arg("-f")
             .arg(name)
@@ -267,11 +332,11 @@ impl ContainerBackend {
 
     fn bind_mount(&self, source: &Path, target: &str, readonly: bool) -> String {
         let mut mount = format!("{}:{target}", source.display());
-        if self.runtime == "podman" {
+        if self.runtime == ContainerRuntimeName::Podman {
             mount.push_str(":z");
         }
         if readonly {
-            if self.runtime == "podman" {
+            if self.runtime == ContainerRuntimeName::Podman {
                 mount.push_str(",ro");
             } else {
                 mount.push_str(":ro");

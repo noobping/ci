@@ -126,7 +126,7 @@ ci man --dir ~/.local/share/man/man1
 CLI flags override workflow fields, workflow fields override workflow defaults, workflow defaults override project config, project config overrides user config, user config overrides system config, and config overrides auto-detection. Values under policy or locked are applied after normal config and CLI flags; system policy is strongest, then user policy, then project policy.
 --config replaces normal config discovery but keeps system and user policy/locked sections.
 .SH GIT
-git_mode accepts auto, host, flatpak, custom, or alias. auto detects Flatpak and uses flatpak-spawn --host git when available, then falls back to host git or the configured Git container image. custom requires git_command; git_command may be a command string or YAML list.
+git_mode accepts auto, host, flatpak, custom, or alias. auto detects Flatpak and uses flatpak-spawn --host git when available, then falls back to host git or the configured Git container image. custom requires git_command; git_command may be a command string or YAML list. container_runtime auto prefers podman, then flatpak-spawn --host podman inside Flatpak, then docker.
 .SH BUILD ARGUMENTS
 Unknown top-level commands are treated as workflow names, so ci build is equivalent to ci run build.
 Arguments after the build workflow name are forwarded to the detected build step. Use -- before build-command flags when a flag name overlaps with ci, for example ci build -- --dry-run.
@@ -229,7 +229,7 @@ Unknown top-level commands are treated as workflow names, so ci build is equival
 Arguments after the build workflow name are forwarded to the detected build step. Native YAML build workflows first look for a step named build, then for a recognizable build command such as cargo build, and append the arguments to that step.
 Known ci options keep their ci meaning before --. Put build-command flags after -- when a flag name overlaps with ci.
 The space-joined forwarded argument string is available to scripts as CI_WORKFLOW_ARGS.
-Use --container to force native workflows into containers, and --no-container to run them on the host.
+Use --container to force native workflows into containers, and --no-container to run them on the host. In Flatpak, container_runtime auto can use host podman through flatpak-spawn --host.
 Native containers use stack-aware dependency cache mounts under .git/ci/container-cache.
 A native run step can set container to an image string or to a map with image, file, packages, components, platform, env, volumes, workdir, and readonly.
 "#,

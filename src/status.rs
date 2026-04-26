@@ -8,8 +8,8 @@ use crate::artifacts::load_manifests;
 use crate::cli::{ExplainArgs, StatusArgs};
 use crate::conditions::{evaluate_condition, interpolate_expressions, ExpressionContext};
 use crate::config::{format_arches, Architecture, GitMode};
-use crate::containers::container_platform;
-use crate::git::{command_exists, preferred_container_runtime};
+use crate::containers::{container_platform, ContainerBackend};
+use crate::git::command_exists;
 use crate::install::{inspect_installation, BinaryState};
 use crate::runner::{available_workflows, AppContext};
 use crate::workflow::{self, provider_name, select_workflows, WorkflowSource};
@@ -106,14 +106,15 @@ pub fn cmd_status(ctx: &AppContext, _args: &StatusArgs) -> crate::error::Result<
         println!("OK   ci-managed hooks: {}", managed_hooks.join(", "));
     }
 
+    let preferred_container_runtime = ContainerBackend::preferred_runtime_label();
     println!(
         "{}   preferred container runtime: {}",
-        if command_exists("podman") || command_exists("docker") {
+        if preferred_container_runtime.is_some() {
             "OK"
         } else {
             "WARN"
         },
-        preferred_container_runtime()
+        preferred_container_runtime.unwrap_or_else(|| "podman or docker".to_string())
     );
     for arch in &ctx.config.defaults.arch {
         if arch == &Architecture::host() {

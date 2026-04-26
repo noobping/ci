@@ -393,6 +393,21 @@ fn flatpak_host_available_in_dir(dir: &Path) -> bool {
             .unwrap_or(false)
 }
 
+pub(crate) fn flatpak_host_command_exists(name: &str) -> bool {
+    running_in_flatpak()
+        && command_exists("flatpak-spawn")
+        && Command::new("flatpak-spawn")
+            .arg("--host")
+            .arg("sh")
+            .arg("-c")
+            .arg(format!("command -v {name} >/dev/null 2>&1"))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+}
+
 pub fn command_exists(name: &str) -> bool {
     Command::new("sh")
         .arg("-c")

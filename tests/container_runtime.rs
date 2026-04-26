@@ -3,7 +3,7 @@ mod common;
 use tempfile::TempDir;
 
 use common::assertions::{assert_failure, assert_success, output, stderr};
-use common::fake_podman::{make_fake_podman, path_with_fake_bin};
+use common::fake_podman::{make_fake_flatpak_spawn, make_fake_podman, path_with_fake_bin};
 use common::repo::TestRepo;
 
 #[test]
@@ -49,6 +49,37 @@ steps:
     assert!(log.contains("/tmp:/tmp/ci-extra"));
     assert!(log.contains("/usr/local/cargo/registry"));
     assert!(log.contains("/usr/local/cargo/git"));
+}
+
+#[test]
+fn auto_runtime_uses_flatpak_host_podman_when_inside_flatpak() {
+    let repo = TestRepo::new();
+    let fake = TempDir::new().expect("fake podman dir");
+    let host_bin = make_fake_podman(fake.path());
+    let flatpak_bin = make_fake_flatpak_spawn(fake.path(), &host_bin);
+    repo.write(
+        ".ci/build.yml",
+        r#"
+on: [manual]
+tech: rust
+container:
+  image: localhost/fake-rust
+steps:
+  - name: container step
+    run: printf flatpak-host > container.txt
+"#,
+    );
+
+    let mut command = repo.ci();
+    command
+        .env("FLATPAK_ID", "dev.test.CI")
+        .env("PATH", format!("{}:/bin", flatpak_bin.display()))
+        .args(["run", "build"]);
+    assert_success(output(command));
+
+    assert_eq!(repo.read("container.txt"), "flatpak-host");
+    let log = std::fs::read_to_string(fake.path().join("podman.log")).expect("read podman log");
+    assert!(log.contains("run --rm"));
 }
 
 #[test]
