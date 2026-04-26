@@ -5,7 +5,7 @@ needs: build
 
 steps:
   - name: install runner into bare repository
-    if: "arch(host) && exists(env:CI_BARE_REPO)"
+    if: "arch(host) && has(env:CI_BARE_REPO)"
     container: false
     run: |
       hooks="${CI_BARE_HOOKS:-server}"

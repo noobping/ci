@@ -68,15 +68,26 @@ pub(crate) fn evaluate_condition_with_probe(
         _ => {}
     }
 
-    if let Some(target) = function_arg(expr, "exists") {
+    if let Some(target) = function_arg_any(expr, &["exists", "has", "is"]) {
         return condition_target_exists(&resolve_condition_target(target, ctx), ctx, command_probe);
     }
-    if let Some(target) = function_arg(expr, "missing") {
+    if let Some(target) = function_arg_any(expr, &["missing", "not"]) {
         return condition_target_exists(&resolve_condition_target(target, ctx), ctx, command_probe)
             .map(|exists| !exists);
     }
     if let Some(target) = function_arg(expr, "arch") {
         return Ok(condition_arch_matches(target, ctx));
+    }
+
+    if let Some(rest) = word_prefix_arg(expr, "is") {
+        return evaluate_condition_with_probe(Some(rest), ctx, command_probe);
+    }
+    if let Some(rest) = word_prefix_arg(expr, "not") {
+        return Ok(!evaluate_condition_with_probe(
+            Some(rest),
+            ctx,
+            command_probe,
+        )?);
     }
 
     if let Some(rest) = expr
@@ -316,6 +327,18 @@ fn function_arg<'a>(expr: &'a str, name: &str) -> Option<&'a str> {
         .and_then(|value| value.strip_prefix('('))
         .and_then(|value| value.strip_suffix(')'))
         .map(str::trim)
+}
+
+fn function_arg_any<'a>(expr: &'a str, names: &[&str]) -> Option<&'a str> {
+    names.iter().find_map(|name| function_arg(expr, name))
+}
+
+fn word_prefix_arg<'a>(expr: &'a str, word: &str) -> Option<&'a str> {
+    if word_operator_at(expr, 0, word) {
+        Some(expr[word.len()..].trim())
+    } else {
+        None
+    }
 }
 
 fn condition_target_exists(

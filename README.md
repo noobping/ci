@@ -154,12 +154,13 @@ Native `.ci/*.yml` steps also support first-class conditions:
 - `if: failure` or `if: failure()`: run after the previous executed step failed.
 - `if: always` or `if: always()`: run regardless of the previous step result.
 - `if: arch(x64)`: true when the selected execution architecture matches; aliases such as `amd64` and `linux/amd64` are normalized, comma-separated values are accepted, and `arch(host)` matches only the host machine's native architecture.
-- `if: exists(cargo)`: true when a repo-relative path exists, or when a bare command exists on `PATH`.
+- `if: exists(cargo)`: true when a repo-relative path exists, or when a bare command exists on `PATH`; `has(...)` and `is(...)` are aliases.
 - `if: exists(path:Cargo.toml)`: true when a repo-relative or absolute file/directory path exists.
 - `if: exists(file:Cargo.toml)` / `if: exists(dir:src)`: true only for files or directories.
 - `if: exists(cmd:cargo)`: true when an executable command exists; `command:`, `exe:`, and `executable:` are aliases.
 - `if: exists(env:USE_DEBUG)`: true when a workflow/step env var is set, or when the host environment provides it.
-- `if: missing(cargo)`: inverse existence check. The same optional target prefixes work with `missing(...)`.
+- `if: missing(cargo)`: inverse existence check; `not(...)` is an alias. The same optional target prefixes work with `missing(...)`.
+- `if: is exists(Cargo.toml)` / `if: not missing(Cargo.toml)`: word forms are accepted for readable existence checks.
 - When a workflow/container default is set, native `run:` steps use that container by default. Use `container: false` on a step that intentionally targets the host, such as installing files under `~`.
 
 Native workflows can require other workflows with `needs:`. Dependencies run before the selected workflow, even when they would not otherwise match the current event. `requires:`, `depends:`, and `dependencies:` are accepted aliases.

@@ -163,7 +163,17 @@ fn exists_checks_repo_relative_files_and_env_paths() {
     assert!(evaluate_condition(Some("exists(path:marker.txt)"), &ctx));
     assert!(evaluate_condition(Some("exists(path:env.BUILD_DIR)"), &ctx));
     assert!(evaluate_condition(Some("exists(file:marker.txt)"), &ctx));
+    assert!(evaluate_condition(Some("has(file:marker.txt)"), &ctx));
+    assert!(evaluate_condition(Some("is(file:marker.txt)"), &ctx));
+    assert!(evaluate_condition(Some("is exists(file:marker.txt)"), &ctx));
     assert!(evaluate_condition(Some("missing(file:target)"), &ctx));
+    assert!(evaluate_condition(Some("not(file:target)"), &ctx));
+    assert!(evaluate_condition(Some("is missing(file:target)"), &ctx));
+    assert!(evaluate_condition(Some("not exists(file:target)"), &ctx));
+    assert!(evaluate_condition(
+        Some("not missing(file:marker.txt)"),
+        &ctx
+    ));
     assert!(evaluate_condition(Some("exists(dir:target)"), &ctx));
     assert!(evaluate_condition(Some("exists(directory:target)"), &ctx));
     assert!(evaluate_condition(Some("missing(dir:marker.txt)"), &ctx));
