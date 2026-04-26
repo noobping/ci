@@ -6,6 +6,27 @@ use common::assertions::{assert_failure, assert_success, output, stderr};
 use common::fake_podman::{make_fake_flatpak_spawn, make_fake_podman, path_with_fake_bin};
 use common::repo::TestRepo;
 
+fn default_platform() -> String {
+    match std::env::consts::ARCH {
+        "x86_64" => "linux/amd64".to_string(),
+        "aarch64" => "linux/arm64".to_string(),
+        arch => format!("linux/{arch}"),
+    }
+}
+
+fn platform_slug(platform: &str) -> String {
+    platform
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
 #[test]
 fn native_container_run_uses_platform_env_volumes_and_cache_mounts() {
     let repo = TestRepo::new();
@@ -285,9 +306,13 @@ steps:
 
     assert_eq!(repo.read("file.txt"), "file");
     let log = std::fs::read_to_string(fake.path().join("podman.log")).expect("read podman log");
-    assert!(log.contains("build --platform linux/amd64"));
+    let platform = default_platform();
+    let platform_slug = platform_slug(&platform);
+    assert!(log.contains(&format!("build --platform {platform}")));
     assert!(log.contains(".ci/step.Containerfile"));
-    assert!(log.contains("localhost/ci-build-step-1-file-step-linux-amd64:latest"));
+    assert!(log.contains(&format!(
+        "localhost/ci-build-step-1-file-step-{platform_slug}:latest"
+    )));
 }
 
 #[test]
@@ -323,12 +348,16 @@ steps:
 
     assert_eq!(repo.read("packages.txt"), "packages");
     let log = std::fs::read_to_string(fake.path().join("podman.log")).expect("read podman log");
-    assert!(log.contains("build --platform linux/amd64"));
-    assert!(log.contains("localhost/ci-build-step-1-package-step-linux-amd64:latest"));
+    let platform = default_platform();
+    let platform_slug = platform_slug(&platform);
+    assert!(log.contains(&format!("build --platform {platform}")));
+    assert!(log.contains(&format!(
+        "localhost/ci-build-step-1-package-step-{platform_slug}:latest"
+    )));
 
-    let generated = repo
-        .path()
-        .join(".git/ci/containers/ci-build-step-1-package-step-linux-amd64.Containerfile");
+    let generated = repo.path().join(format!(
+        ".git/ci/containers/ci-build-step-1-package-step-{platform_slug}.Containerfile"
+    ));
     let generated = std::fs::read_to_string(generated).expect("read generated Containerfile");
     assert!(generated.contains("FROM localhost/base-rust"));
     assert!(generated.contains("rustup component add 'rustfmt'"));
