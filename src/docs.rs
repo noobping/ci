@@ -127,6 +127,8 @@ ci man --dir ~/.local/share/man/man1
 .SH PRECEDENCE
 CLI flags override workflow fields, workflow fields override workflow defaults, workflow defaults override project config, project config overrides user config, user config overrides system config, and config overrides auto-detection. Values under policy or locked are applied after normal config and CLI flags; system policy is strongest, then user policy, then project policy.
 --config replaces normal config discovery but keeps system and user policy/locked sections.
+.SH OUTPUT
+--quiet hides informational output. --silent hides informational output and warnings, leaving errors visible. They are separate modes; --silent is useful for hooks and timers that should only report failures.
 .SH GIT
 git_mode accepts auto, host, flatpak, custom, or alias. auto detects Flatpak and uses flatpak-spawn --host git when available, then falls back to host git or the configured Git container image. custom requires git_command; git_command may be a command string or YAML list. container_runtime auto prefers podman, then flatpak-spawn --host podman inside Flatpak, then docker.
 .SH BUILD ARGUMENTS

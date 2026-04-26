@@ -61,7 +61,7 @@ ci --quiet build
 ci --silent build
 ```
 
-Verbose and quiet/silent modes are passed to supported runner-owned commands, such as Git. User-authored `run:` scripts are left exactly as written.
+`--quiet` hides normal informational output. `--silent` hides informational output and warnings, leaving errors visible. Verbose, quiet, and silent modes are passed to supported runner-owned commands, such as Git. User-authored `run:` scripts are left exactly as written.
 
 Configuration precedence is:
 
@@ -265,7 +265,7 @@ Optional config lives in:
 
 The same `.yaml` filenames are also accepted. Config is loaded in order from system, user, then project config, so project config wins. `--config path/to/file.yml` uses that file for normal config while still keeping system/user `policy` and `locked` sections.
 
-Supported defaults include shell, quiet/silent output, fail-fast, tech stack, architecture, container settings, container runtime, git mode/command/image, default install mode, recursive checkout, default branch allowlist, artifact store, and actions cache. By default, `.github/workflows` and `.gitea/workflows` are discovered only in bare repositories; set `other_workflows: true` or `other_workflows: false` to override that while keeping native `.ci` workflows enabled.
+Supported defaults include shell, quiet output, silent output, fail-fast, tech stack, architecture, container settings, container runtime, git mode/command/image, default install mode, recursive checkout, default branch allowlist, artifact store, and actions cache. `quiet: true` hides info messages; `silent: true` hides info and warnings so only errors are shown. By default, `.github/workflows` and `.gitea/workflows` are discovered only in bare repositories; set `other_workflows: true` or `other_workflows: false` to override that while keeping native `.ci` workflows enabled.
 
 Example:
 
@@ -794,9 +794,10 @@ ci explain pre-push
 ci status
 ```
 
-Use `--verbose` for command traces and `--silent` for hooks or timers:
+Use `--verbose` for command traces, `--quiet` to hide info messages, and `--silent` for errors-only hooks or timers:
 
 ```sh
 ci --verbose build
+ci --quiet build
 ci --silent run --event pre-push build
 ```

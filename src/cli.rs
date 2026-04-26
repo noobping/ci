@@ -44,7 +44,7 @@ pub struct GlobalOptions {
     #[arg(
         long = "silent",
         global = true,
-        help = "Alias for --quiet, useful for hooks and timers"
+        help = "Hide normal and warning output; errors are still shown"
     )]
     pub silent: bool,
 
