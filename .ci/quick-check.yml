@@ -1,0 +1,9 @@
+name: quick-check
+on:
+  - pre-commit
+tech: rust
+steps:
+  - name: format
+    run: cargo fmt --check
+  - name: quick compile
+    run: cargo check --all-targets
