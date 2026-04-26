@@ -1,3 +1,4 @@
+install_mode: copy
 container:
   arch:
     - x64
