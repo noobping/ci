@@ -357,6 +357,11 @@ fn install_and_uninstall_manage_hooks_and_runner_binary() {
     assert_success(output(install));
 
     assert!(repo.path().join(".git/hooks/pre-push").exists());
+    assert_eq!(
+        fs::read_link(repo.path().join(".git/hooks/pre-push")).expect("read hook symlink"),
+        std::path::PathBuf::from("../ci/hook")
+    );
+    assert!(repo.path().join(".git/ci/hook").exists());
     assert!(
         repo.path().join(".git/ci/run.x64").exists()
             || repo.path().join(".git/ci/run.arm64").exists()

@@ -10,6 +10,7 @@ use crate::runner::AppContext;
 use crate::workflow::all_hooks;
 
 pub const MANAGED_MARKER: &str = "managed-by: ci";
+pub const MANAGED_HOOK_NAME: &str = "hook";
 pub const MANAGED_RUNNER_NAME: &str = "run";
 
 #[derive(Clone, Debug)]
@@ -66,6 +67,7 @@ pub fn cmd_install(ctx: &AppContext, args: &InstallArgs) -> Result<i32> {
         for ci_bin in &ci_bins {
             install_binary(&ctx.repo.current_exe, ci_bin, &args.mode)?;
         }
+        install_hook_dispatcher(&managed_hook_dispatcher_path(&ctx.repo))?;
         fs::create_dir_all(&hooks_dir)?;
     }
 
@@ -118,6 +120,7 @@ pub fn cmd_update(ctx: &AppContext, args: &UpdateArgs) -> Result<i32> {
                 chmod_executable(ci_bin)?;
             }
         }
+        install_hook_dispatcher(&managed_hook_dispatcher_path(&ctx.repo))?;
     }
 
     refresh_managed_hooks(ctx, args.dry_run)?;
@@ -176,6 +179,7 @@ pub fn cmd_uninstall(ctx: &AppContext, args: &UninstallArgs) -> Result<i32> {
     if !args.keep_binary {
         let ci_bins = managed_runner_paths(&ctx.repo, &ctx.config.defaults.arch);
         let legacy_ci_bin = legacy_managed_runner_path(&ctx.repo);
+        let hook_dispatcher = managed_hook_dispatcher_path(&ctx.repo);
         let ci_dir = managed_runner_dir(&ctx.repo);
         if args.dry_run {
             for ci_bin in &ci_bins {
@@ -184,11 +188,15 @@ pub fn cmd_uninstall(ctx: &AppContext, args: &UninstallArgs) -> Result<i32> {
             if path_exists_or_symlink(&legacy_ci_bin) {
                 println!("would remove legacy binary {}", legacy_ci_bin.display());
             }
+            if path_exists_or_symlink(&hook_dispatcher) {
+                println!("would remove hook dispatcher {}", hook_dispatcher.display());
+            }
         } else {
             for ci_bin in &ci_bins {
                 remove_file_if_exists(ci_bin)?;
             }
             remove_file_if_exists(&legacy_ci_bin)?;
+            remove_file_if_exists(&hook_dispatcher)?;
             let _ = fs::remove_dir(&ci_dir);
         }
     }
@@ -216,7 +224,7 @@ pub fn inspect_installation(repo: &RepoInfo, arches: &[Architecture]) -> Install
             let path = hooks_dir.join(hook);
             HookState {
                 name: hook.to_string(),
-                exists: path.exists(),
+                exists: path_exists_or_symlink(&path),
                 managed: is_managed_hook(&path),
                 executable: is_executable(&path),
                 backup: hooks_dir.join(format!("{hook}.ci-backup")).exists(),
@@ -300,8 +308,31 @@ fn install_binary(source: &Path, target: &Path, mode: &InstallMode) -> Result<()
     Ok(())
 }
 
+fn install_hook_dispatcher(path: &Path) -> Result<()> {
+    let script = format!(
+        "#!/usr/bin/env sh\n\
+         # {MANAGED_MARKER}\n\
+         ci_hook=$(basename \"$0\")\n\
+         ci_machine=$(uname -m 2>/dev/null || printf unknown)\n\
+         case \"$ci_machine\" in\n\
+         \tx86_64|amd64) ci_arch=x64 ;;\n\
+         \taarch64|arm64) ci_arch=arm64 ;;\n\
+         \t*) ci_arch=$ci_machine ;;\n\
+         esac\n\
+         ci_dir=$(dirname \"$0\")/../ci\n\
+         ci_runner=\"$ci_dir/{MANAGED_RUNNER_NAME}.$ci_arch\"\n\
+         if [ ! -x \"$ci_runner\" ]; then\n\
+         \tci_runner=\"$ci_dir/{MANAGED_RUNNER_NAME}\"\n\
+         fi\n\
+         exec \"$ci_runner\" hook \"$ci_hook\" \"$@\"\n"
+    );
+    fs::write(path, script)?;
+    chmod_executable(path)?;
+    Ok(())
+}
+
 fn install_hook(hook_path: &Path, hook: &str, force: bool, backup_existing: bool) -> Result<()> {
-    if hook_path.exists() && !is_managed_hook(hook_path) {
+    if path_exists_or_symlink(hook_path) && !is_managed_hook(hook_path) {
         if backup_existing {
             let backup_path = hook_path.with_file_name(format!("{hook}.ci-backup"));
             remove_file_if_exists(&backup_path)?;
@@ -314,29 +345,17 @@ fn install_hook(hook_path: &Path, hook: &str, force: bool, backup_existing: bool
         }
     }
 
-    let script = format!(
-        "#!/usr/bin/env sh\n\
-         # {MANAGED_MARKER}\n\
-         ci_machine=$(uname -m 2>/dev/null || printf unknown)\n\
-         case \"$ci_machine\" in\n\
-         \tx86_64|amd64) ci_arch=x64 ;;\n\
-         \taarch64|arm64) ci_arch=arm64 ;;\n\
-         \t*) ci_arch=$ci_machine ;;\n\
-         esac\n\
-         ci_dir=$(dirname \"$0\")/../ci\n\
-         ci_runner=\"$ci_dir/{MANAGED_RUNNER_NAME}.$ci_arch\"\n\
-         if [ ! -x \"$ci_runner\" ]; then\n\
-         \tci_runner=\"$ci_dir/{MANAGED_RUNNER_NAME}\"\n\
-         fi\n\
-         exec \"$ci_runner\" hook {hook} \"$@\"\n"
-    );
-    fs::write(hook_path, script)?;
-    chmod_executable(hook_path)?;
+    remove_file_if_exists(hook_path)?;
+    symlink(format!("../ci/{MANAGED_HOOK_NAME}"), hook_path)?;
     Ok(())
 }
 
 fn managed_runner_dir(repo: &RepoInfo) -> PathBuf {
     repo.git_dir.join("ci")
+}
+
+fn managed_hook_dispatcher_path(repo: &RepoInfo) -> PathBuf {
+    managed_runner_dir(repo).join(MANAGED_HOOK_NAME)
 }
 
 fn managed_runner_paths(repo: &RepoInfo, arches: &[Architecture]) -> Vec<PathBuf> {
@@ -362,6 +381,13 @@ fn path_exists_or_symlink(path: &Path) -> bool {
 }
 
 pub fn is_managed_hook(path: &Path) -> bool {
+    if fs::read_link(path)
+        .map(|target| target == Path::new("../ci").join(MANAGED_HOOK_NAME))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+
     fs::read_to_string(path)
         .map(|content| content.contains(MANAGED_MARKER))
         .unwrap_or(false)

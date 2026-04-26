@@ -581,7 +581,7 @@ Copies the currently running `ci` binary into an arch-specific path such as `.gi
 ci update
 ```
 
-For link mode, this refreshes the symlink. For copy mode, this copies the current binary again.
+For link mode, this refreshes the runner symlink. For copy mode, this copies the current binary again. Managed hook files are symlinks to one shared dispatcher at `.git/ci/hook`.
 
 ## Status and explain
 
@@ -647,7 +647,7 @@ to restore backed-up hooks named `hook-name.ci-backup`.
 ci hook pre-commit
 ```
 
-or be invoked directly as a Git hook. Installed hooks are small shell wrappers that call:
+or be invoked directly as a Git hook. Installed hooks are symlinks to `.git/ci/hook`, a shared dispatcher that selects the arch-specific runner and calls:
 
 ```sh
 ../ci/run hook <hook-name> "$@"
