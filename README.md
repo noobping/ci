@@ -46,9 +46,11 @@ Arguments after the `build` workflow name are forwarded to the detected build st
 ```sh
 ci run build --no-default-features
 ci build --features sqlite
+ci build -- --dry-run
+ci build --no-dry-run -- --dry-run
 ```
 
-For native YAML build workflows, `ci` looks for a step named `build`, then for a recognizable build command such as `cargo build`, and appends the arguments to that step. The space-joined argument string is also available to scripts as `CI_WORKFLOW_ARGS`.
+For native YAML build workflows, `ci` looks for a step named `build`, then for a recognizable build command such as `cargo build`, and appends the arguments to that step. Known `ci` options keep their `ci` meaning before `--`, so `ci build --dry-run` previews the workflow. Put build-command flags after `--` when a flag name overlaps with `ci`. The space-joined argument string is also available to scripts as `CI_WORKFLOW_ARGS`.
 
 Global output controls:
 

@@ -157,8 +157,21 @@ pub struct RunArgs {
     #[arg(long = "all")]
     pub all: bool,
 
-    #[arg(long = "dry-run")]
+    #[arg(
+        long = "dry-run",
+        action = ArgAction::SetTrue,
+        overrides_with = "no_dry_run",
+        help = "Preview selected workflows without running steps"
+    )]
     pub dry_run: bool,
+
+    #[arg(
+        long = "no-dry-run",
+        action = ArgAction::SetTrue,
+        overrides_with = "dry_run",
+        help = "Run workflows even when --dry-run was set earlier"
+    )]
+    pub no_dry_run: bool,
 
     #[arg(long = "fail-fast")]
     pub fail_fast: bool,

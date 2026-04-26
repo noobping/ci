@@ -172,6 +172,48 @@ steps:
 }
 
 #[test]
+fn build_separator_forwards_known_ci_flag_to_build_step() {
+    let repo = TestRepo::new();
+    let fake = TempDir::new().expect("fake cargo dir");
+    let bin_dir = fake.path().join("bin");
+    fs::create_dir_all(&bin_dir).expect("create fake bin dir");
+    let cargo = bin_dir.join("cargo");
+    fs::write(
+        &cargo,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CARGO_ARGS_OUT\"\n",
+    )
+    .expect("write fake cargo");
+    let mut permissions = fs::metadata(&cargo).expect("cargo metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&cargo, permissions).expect("chmod fake cargo");
+    let args_out = fake.path().join("cargo.args");
+
+    repo.write(
+        ".ci/build.yml",
+        r#"
+on: [manual]
+steps:
+  - name: build
+    run: cargo build --release
+  - run: printf done > ran.txt
+"#,
+    );
+
+    let mut command = repo.ci();
+    command
+        .env("PATH", path_with_fake_bin(&bin_dir))
+        .env("CARGO_ARGS_OUT", &args_out)
+        .args(["build", "--no-dry-run", "--", "--dry-run"]);
+    assert_success(output(command));
+
+    assert_eq!(
+        fs::read_to_string(args_out).expect("read cargo args"),
+        "build\n--release\n--dry-run\n"
+    );
+    assert_eq!(repo.read("ran.txt"), "done");
+}
+
+#[test]
 fn run_rejects_forwarded_args_for_non_build_workflow() {
     let repo = TestRepo::new();
     repo.write(

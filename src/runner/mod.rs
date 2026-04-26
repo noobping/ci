@@ -189,7 +189,7 @@ pub fn cmd_run(ctx: &AppContext, args: &RunArgs) -> Result<i32> {
             args.workflow.clone()
         },
         event: args.event.clone(),
-        dry_run: args.dry_run,
+        dry_run: args.dry_run && !args.no_dry_run,
         keep_going,
         arches: ctx.config.defaults.arch.clone(),
         arch_overridden: !ctx.global.arch.is_empty(),

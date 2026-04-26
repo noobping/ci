@@ -112,6 +112,57 @@ fn rewritten_workflow_accepts_build_args_after_workflow() {
 }
 
 #[test]
+fn build_args_after_separator_can_match_ci_options() {
+    let cli = Cli::try_parse_from(rewrite(["ci", "build", "--", "--dry-run"])).expect("parse");
+
+    match cli.command {
+        Commands::Run(args) => {
+            assert_eq!(args.workflow.as_deref(), Some("build"));
+            assert!(!args.dry_run);
+            assert_eq!(args.args, vec!["--dry-run"]);
+        }
+        _ => panic!("expected run command"),
+    }
+}
+
+#[test]
+fn run_dry_run_flags_can_be_cleared_before_separator() {
+    let cli = Cli::try_parse_from(rewrite([
+        "ci",
+        "build",
+        "--dry-run",
+        "--no-dry-run",
+        "--",
+        "--dry-run",
+    ]))
+    .expect("parse");
+
+    match cli.command {
+        Commands::Run(args) => {
+            assert_eq!(args.workflow.as_deref(), Some("build"));
+            assert!(!args.dry_run);
+            assert!(args.no_dry_run);
+            assert_eq!(args.args, vec!["--dry-run"]);
+        }
+        _ => panic!("expected run command"),
+    }
+}
+
+#[test]
+fn run_dry_run_before_separator_stays_ci_option() {
+    let cli = Cli::try_parse_from(rewrite(["ci", "build", "--dry-run"])).expect("parse");
+
+    match cli.command {
+        Commands::Run(args) => {
+            assert_eq!(args.workflow.as_deref(), Some("build"));
+            assert!(args.dry_run);
+            assert!(args.args.is_empty());
+        }
+        _ => panic!("expected run command"),
+    }
+}
+
+#[test]
 fn known_commands_and_aliases_are_not_rewritten_as_workflows() {
     let list = Cli::try_parse_from(rewrite(["ci", "list"])).expect("parse");
     assert!(matches!(list.command, Commands::List(_)));
