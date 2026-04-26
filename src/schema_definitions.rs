@@ -73,6 +73,10 @@ pub(crate) fn workflow_schema() -> serde_json::Value {
             "name": { "type": "string" },
             "defaults": workflow_override_schema(),
             "on": event_schema(),
+            "needs": dependency_schema(),
+            "requires": dependency_schema(),
+            "depends": dependency_schema(),
+            "dependencies": dependency_schema(),
             "tech": tech_schema(),
             "type": tech_schema(),
             "tech-stack": tech_schema(),
@@ -235,6 +239,15 @@ fn event_schema() -> serde_json::Value {
 }
 
 fn arch_schema() -> serde_json::Value {
+    json!({
+        "oneOf": [
+            { "type": "string" },
+            string_array_schema()
+        ]
+    })
+}
+
+fn dependency_schema() -> serde_json::Value {
     json!({
         "oneOf": [
             { "type": "string" },

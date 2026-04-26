@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use crate::actions::ActionsWorkflow;
@@ -6,7 +6,7 @@ use crate::config::{
     ArchFilter, ArtifactConfig, BranchConfig, ContainerConfig, ExecutionConfig, ResolvedConfig,
     WorkflowOverride,
 };
-use crate::error::Result;
+use crate::error::{CiError, Result};
 mod discovery;
 mod native;
 mod validation;
@@ -76,6 +76,7 @@ pub struct Workflow {
     pub kind: WorkflowKind,
     pub provider: WorkflowProvider,
     pub source: WorkflowSource,
+    pub needs: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -306,6 +307,105 @@ pub fn select_workflows(
             })
         })
         .collect()
+}
+
+pub fn expand_workflow_dependencies(
+    workflows: &[Workflow],
+    config: &ResolvedConfig,
+    event: &str,
+    selected: Vec<WorkflowMatch>,
+) -> Result<Vec<WorkflowMatch>> {
+    let mut expander = DependencyExpander {
+        workflows,
+        config,
+        event,
+        visiting: Vec::new(),
+        completed: BTreeSet::new(),
+        ordered: Vec::new(),
+    };
+
+    for item in selected {
+        expander.add(item.workflow.clone(), Some(item), None)?;
+    }
+
+    Ok(expander.ordered)
+}
+
+struct DependencyExpander<'a> {
+    workflows: &'a [Workflow],
+    config: &'a ResolvedConfig,
+    event: &'a str,
+    visiting: Vec<String>,
+    completed: BTreeSet<String>,
+    ordered: Vec<WorkflowMatch>,
+}
+
+impl DependencyExpander<'_> {
+    fn add(
+        &mut self,
+        workflow: Workflow,
+        selected: Option<WorkflowMatch>,
+        required_by: Option<&str>,
+    ) -> Result<()> {
+        let key = workflow_key(&workflow);
+        if self.completed.contains(&key) {
+            return Ok(());
+        }
+
+        if let Some(index) = self.visiting.iter().position(|item| item == &key) {
+            let mut cycle = self.visiting[index..].to_vec();
+            cycle.push(key);
+            return Err(CiError::Usage(format!(
+                "workflow dependency cycle: {}",
+                cycle.join(" -> ")
+            )));
+        }
+
+        self.visiting.push(key.clone());
+        for need in &workflow.needs {
+            let dependency = workflow_dependency(self.workflows, &workflow, need)?;
+            self.add(dependency, None, Some(&workflow.name))?;
+        }
+        self.visiting.pop();
+
+        self.completed.insert(key);
+        let item = selected.unwrap_or_else(|| WorkflowMatch {
+            resolved: resolve_workflow(&workflow, self.config, self.event),
+            workflow,
+            reasons: vec![format!(
+                "required by `{}`",
+                required_by.unwrap_or("selected workflow")
+            )],
+        });
+        self.ordered.push(item);
+        Ok(())
+    }
+}
+
+fn workflow_dependency(
+    workflows: &[Workflow],
+    dependent: &Workflow,
+    need: &str,
+) -> Result<Workflow> {
+    let matches = workflows
+        .iter()
+        .filter(|workflow| workflow.name == need)
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [] => Err(CiError::Usage(format!(
+            "workflow `{}` needs missing workflow `{need}`",
+            dependent.name
+        ))),
+        [workflow] => Ok((*workflow).clone()),
+        _ => Err(CiError::Usage(format!(
+            "workflow `{}` needs ambiguous workflow `{need}`",
+            dependent.name
+        ))),
+    }
+}
+
+fn workflow_key(workflow: &Workflow) -> String {
+    format!("{}:{}", workflow.name, workflow.path.display())
 }
 
 pub fn explain_subject(

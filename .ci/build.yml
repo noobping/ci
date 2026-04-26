@@ -1,45 +1,15 @@
+name: build
 on:
   - manual
   - pre-push
-
+needs: check
 tech: rust
 
 steps:
-  - name: format
-    run: cargo fmt --check
-
-  - name: lint
-    run: cargo clippy --all-targets -- -D warnings
-
-  - name: test
-    run: cargo test --all
-
   - name: build
     run: cargo build --release
 
-  - name: install executable
-    if: exists(src)
-    container: false
-    use: export
-    src: target/release/ci
-    dest: '~/.local/bin/ci.${{ env.CI_ARCH }}'
-    replace: true
-
-  - use: link
-    if: arch(host)
-    src: '~/.local/bin/ci.${{ env.CI_ARCH }}'
-    dest: ~/.local/bin/ci
-    replace: true
-
-  - name: install bash completion
-    if: arch(host)
-    container: false
+  - name: package binary
     run: |
-      mkdir -p ~/.local/share/bash-completion/completions
-      ci completion bash > ~/.local/share/bash-completion/completions/ci
-  - name: install manual
-    if: arch(host)
-    container: false
-    run: |
-      mkdir -p ~/.local/share/man/man1
-      ci man --dir ~/.local/share/man/man1
+      mkdir -p dist
+      install -Dm0755 target/release/ci "dist/ci-linux-$CI_ARCH"

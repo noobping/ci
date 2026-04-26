@@ -194,6 +194,7 @@ fn generated_build_workflow(
         path: ci_dir.join("build.yml"),
         kind: WorkflowKind::NativeYaml,
         provider: WorkflowProvider::Native,
+        needs: Vec::new(),
         source: WorkflowSource::NativeYaml(NativeWorkflow {
             metadata,
             steps: vec![NativeStep {

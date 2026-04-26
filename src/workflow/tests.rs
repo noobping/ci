@@ -147,6 +147,33 @@ steps:
 }
 
 #[test]
+fn native_workflow_parses_dependencies() {
+    let file: NativeWorkflowFile = serde_yaml::from_str(
+        r#"
+needs:
+  - check
+  - build
+steps:
+  - run: echo ok
+"#,
+    )
+    .expect("parse workflow");
+
+    assert_eq!(file.needs.to_vec(), vec!["check", "build"]);
+
+    let alias: NativeWorkflowFile = serde_yaml::from_str(
+        r#"
+depends: check
+steps:
+  - run: echo ok
+"#,
+    )
+    .expect("parse workflow");
+
+    assert_eq!(alias.needs.to_vec(), vec!["check"]);
+}
+
+#[test]
 fn native_workflow_defaults_merge_under_direct_fields() {
     let file: NativeWorkflowFile = serde_yaml::from_str(
         r#"

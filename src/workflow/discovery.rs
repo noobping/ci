@@ -123,6 +123,7 @@ fn discover_actions_dir(
             path: path.to_path_buf(),
             kind,
             provider,
+            needs: Vec::new(),
             source: WorkflowSource::Actions(action),
         });
     }
@@ -136,6 +137,7 @@ fn discover_native_yaml(base: &Path, path: &Path) -> Result<Workflow> {
     validate_native_workflow_keys(&value, path)?;
     let file: NativeWorkflowFile = serde_yaml::from_str(&raw)?;
     let metadata = file.metadata();
+    let needs = file.needs.to_vec();
     let steps = file
         .steps
         .into_iter()
@@ -150,37 +152,50 @@ fn discover_native_yaml(base: &Path, path: &Path) -> Result<Workflow> {
         path: path.to_path_buf(),
         kind: WorkflowKind::NativeYaml,
         provider: WorkflowProvider::Native,
+        needs,
         source: WorkflowSource::NativeYaml(NativeWorkflow { metadata, steps }),
     })
 }
 
 fn discover_executable_workflow(base: &Path, path: &Path) -> Result<Workflow> {
+    let metadata = load_directory_metadata(path.parent())?;
     Ok(Workflow {
         name: workflow_name(base, path, &WorkflowKind::Executable),
         path: path.to_path_buf(),
         kind: WorkflowKind::Executable,
         provider: WorkflowProvider::Native,
+        needs: metadata.needs,
         source: WorkflowSource::Executable(ExecutableWorkflow {
-            metadata: load_directory_metadata(path.parent())?,
+            metadata: metadata.metadata,
         }),
     })
 }
 
 fn discover_container_workflow(base: &Path, path: &Path) -> Result<Workflow> {
+    let metadata = load_directory_metadata(path.parent())?;
     Ok(Workflow {
         name: workflow_name(base, path, &WorkflowKind::Container),
         path: path.to_path_buf(),
         kind: WorkflowKind::Container,
         provider: WorkflowProvider::Native,
+        needs: metadata.needs,
         source: WorkflowSource::Container(ContainerWorkflow {
-            metadata: load_directory_metadata(path.parent())?,
+            metadata: metadata.metadata,
         }),
     })
 }
 
-fn load_directory_metadata(dir: Option<&Path>) -> Result<WorkflowOverride> {
+struct DirectoryMetadata {
+    metadata: WorkflowOverride,
+    needs: Vec<String>,
+}
+
+fn load_directory_metadata(dir: Option<&Path>) -> Result<DirectoryMetadata> {
     let Some(dir) = dir else {
-        return Ok(WorkflowOverride::default());
+        return Ok(DirectoryMetadata {
+            metadata: WorkflowOverride::default(),
+            needs: Vec::new(),
+        });
     };
     for file_name in ["workflow.yml", "workflow.yaml"] {
         let path = dir.join(file_name);
@@ -189,10 +204,16 @@ fn load_directory_metadata(dir: Option<&Path>) -> Result<WorkflowOverride> {
             let value: Value = serde_yaml::from_str(&raw)?;
             validate_native_workflow_keys(&value, &path)?;
             let file: NativeWorkflowFile = serde_yaml::from_str(&raw)?;
-            return Ok(file.metadata());
+            return Ok(DirectoryMetadata {
+                metadata: file.metadata(),
+                needs: file.needs.to_vec(),
+            });
         }
     }
-    Ok(WorkflowOverride::default())
+    Ok(DirectoryMetadata {
+        metadata: WorkflowOverride::default(),
+        needs: Vec::new(),
+    })
 }
 
 fn directory_has_other_runnables(dir: Option<&Path>) -> Result<bool> {

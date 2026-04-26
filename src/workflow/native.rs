@@ -18,6 +18,8 @@ pub(crate) struct NativeWorkflowFile {
     pub(crate) defaults: WorkflowOverride,
     #[serde(default, rename = "on")]
     pub(crate) on: EventFilter,
+    #[serde(default, alias = "requires", alias = "depends", alias = "dependencies")]
+    pub(crate) needs: WorkflowNeeds,
     #[serde(
         default,
         rename = "tech",
@@ -40,6 +42,25 @@ pub(crate) struct NativeWorkflowFile {
     pub(crate) env: BTreeMap<String, String>,
     #[serde(default)]
     pub(crate) steps: Vec<RawNativeStep>,
+}
+
+#[derive(Clone, Debug, Deserialize, Default)]
+#[serde(untagged)]
+pub(crate) enum WorkflowNeeds {
+    #[default]
+    None,
+    One(String),
+    Many(Vec<String>),
+}
+
+impl WorkflowNeeds {
+    pub(crate) fn to_vec(&self) -> Vec<String> {
+        match self {
+            Self::None => Vec::new(),
+            Self::One(value) => vec![value.clone()],
+            Self::Many(values) => values.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Default)]

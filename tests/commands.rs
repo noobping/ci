@@ -254,6 +254,38 @@ steps:
 }
 
 #[test]
+fn workflow_needs_run_dependencies_before_selected_workflow() {
+    let repo = TestRepo::new();
+    repo.write(
+        ".ci/build.yml",
+        r#"
+on: [manual]
+steps:
+  - run: |
+      printf build >> order.txt
+      printf built > built.txt
+"#,
+    );
+    repo.write(
+        ".ci/release.yml",
+        r#"
+on: [manual]
+needs: build
+steps:
+  - run: |
+      test -f built.txt
+      printf release >> order.txt
+"#,
+    );
+
+    let mut command = repo.ci();
+    command.args(["run", "release"]);
+    assert_success(output(command));
+
+    assert_eq!(repo.read("order.txt"), "buildrelease");
+}
+
+#[test]
 fn status_reports_generated_workflows_and_architecture_diagnostics() {
     let repo = TestRepo::new();
     repo.write(

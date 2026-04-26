@@ -150,6 +150,23 @@ Native `.ci/*.yml` steps also support first-class conditions:
 - `if: missing(cargo)`: inverse existence check. The same optional target prefixes work with `missing(...)`.
 - When a workflow/container default is set, native `run:` steps use that container by default. Use `container: false` on a step that intentionally targets the host, such as installing files under `~`.
 
+Native workflows can require other workflows with `needs:`. Dependencies run before the selected workflow, even when they would not otherwise match the current event. `requires:`, `depends:`, and `dependencies:` are accepted aliases.
+
+```yaml
+name: release-bin
+on: [post-receive, manual]
+needs: build
+steps:
+  - run: install -Dm0755 "dist/ci-linux-$CI_ARCH" "public/ci-linux-$CI_ARCH"
+```
+
+This repository uses that to keep the workflows small:
+
+- `check`: format, lint, and test
+- `build`: depends on `check`, builds release binaries, and writes `dist/ci-linux-$CI_ARCH`
+- `install-local`: depends on `build` and installs the host binary under `~/.local/bin`
+- `aur`: depends on `build`, generates `.SRCINFO`, and commits AUR metadata when available
+
 To add a fallback step after a failure and still let the workflow recover, mark the failing step with `continue-on-error: true`.
 
 ```yaml

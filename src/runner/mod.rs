@@ -281,6 +281,8 @@ fn execute_run(ctx: &AppContext, request: RunRequest) -> Result<i32> {
             .verbose(format!("no workflows matched event `{}`", request.event));
         return Ok(0);
     }
+    let matches =
+        workflow::expand_workflow_dependencies(&workflows, &ctx.config, &request.event, matches)?;
 
     if request.dry_run {
         for item in &matches {

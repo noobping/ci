@@ -1,0 +1,15 @@
+name: check
+on:
+  - manual
+  - pre-push
+tech: rust
+
+steps:
+  - name: format
+    run: cargo fmt --check
+
+  - name: lint
+    run: cargo clippy --all-targets -- -D warnings
+
+  - name: test
+    run: cargo test --all
