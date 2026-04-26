@@ -37,6 +37,8 @@ pub(crate) fn config_schema() -> serde_json::Value {
                     "node-image": { "type": "string" }
                 }
             },
+            "other_workflows": { "type": "boolean" },
+            "other-workflows": { "type": "boolean" },
             "shell": { "type": "string" },
             "quiet": { "type": "boolean" },
             "silent": { "type": "boolean" },

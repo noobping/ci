@@ -17,19 +17,21 @@ use crate::workflow::{
 use super::native::NativeWorkflowFile;
 use super::validation::validate_native_workflow_keys;
 
-pub fn discover_all(repo: &RepoInfo) -> Result<Vec<Workflow>> {
+pub fn discover_all(repo: &RepoInfo, include_other_workflows: bool) -> Result<Vec<Workflow>> {
     let mut workflows = Vec::new();
     discover_native(repo, &mut workflows)?;
-    discover_actions_dir(
-        &repo.root.join(".github").join("workflows"),
-        ActionsProvider::GitHub,
-        &mut workflows,
-    )?;
-    discover_actions_dir(
-        &repo.root.join(".gitea").join("workflows"),
-        ActionsProvider::Gitea,
-        &mut workflows,
-    )?;
+    if include_other_workflows {
+        discover_actions_dir(
+            &repo.root.join(".github").join("workflows"),
+            ActionsProvider::GitHub,
+            &mut workflows,
+        )?;
+        discover_actions_dir(
+            &repo.root.join(".gitea").join("workflows"),
+            ActionsProvider::Gitea,
+            &mut workflows,
+        )?;
+    }
     workflows.sort_by(|left, right| left.name.cmp(&right.name).then(left.path.cmp(&right.path)));
     Ok(workflows)
 }

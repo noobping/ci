@@ -34,6 +34,13 @@ impl TestRepo {
         Self { _temp: temp, root }
     }
 
+    pub fn new_bare() -> Self {
+        let temp = TempDir::new().expect("create temp repo");
+        let root = temp.path().to_path_buf();
+        run_ok(Command::new("git").arg("init").arg("--bare").arg(&root));
+        Self { _temp: temp, root }
+    }
+
     pub fn path(&self) -> &Path {
         &self.root
     }

@@ -423,7 +423,7 @@ fn execute_run(ctx: &AppContext, request: RunRequest) -> Result<i32> {
 }
 
 pub(crate) fn available_workflows(ctx: &AppContext) -> Result<Vec<Workflow>> {
-    let workflows = workflow::discover_all(&ctx.repo)?;
+    let workflows = workflow::discover_all(&ctx.repo, ctx.config.other_workflows)?;
     if workflows.is_empty() {
         Ok(generated_default_workflows(
             &ctx.repo.root,

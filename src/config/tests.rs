@@ -211,6 +211,26 @@ container:
 }
 
 #[test]
+fn config_can_disable_other_workflows() {
+    let file: ConfigFile = serde_yaml::from_str(
+        r#"
+other-workflows: false
+"#,
+    )
+    .expect("parse other workflow support");
+
+    assert_eq!(file.other_workflows, Some(false));
+
+    let system: ConfigFile =
+        serde_yaml::from_str("other_workflows: false\n").expect("parse system config");
+    let project: ConfigFile =
+        serde_yaml::from_str("other_workflows: true\n").expect("parse project config");
+    let merged = merge_config_files([system, project]);
+
+    assert_eq!(merged.other_workflows, Some(true));
+}
+
+#[test]
 fn explicit_defaults_override_root_default_shorthand() {
     let file: ConfigFile = serde_yaml::from_str(
         r#"

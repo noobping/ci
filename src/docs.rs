@@ -110,6 +110,8 @@ GitHub Actions style workflows.
 .TP
 .B .gitea/workflows/*.yml
 Gitea Actions style workflows.
+.PP
+By default, .github and .gitea workflows are discovered only for bare repositories. Set other_workflows: true or false in config to override this while keeping native .ci workflows enabled.
 .SH EXAMPLES
 .EX
 ci list

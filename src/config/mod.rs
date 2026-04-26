@@ -157,6 +157,9 @@ pub struct ConfigFile {
     #[serde(default)]
     pub workflows: BTreeMap<String, WorkflowOverride>,
 
+    #[serde(alias = "other-workflows")]
+    pub other_workflows: Option<bool>,
+
     #[serde(default)]
     pub actions: ActionsConfig,
 }
@@ -191,6 +194,7 @@ pub struct ResolvedConfig {
     pub defaults: Defaults,
     pub hooks: BTreeMap<String, WorkflowOverride>,
     pub workflows: BTreeMap<String, WorkflowOverride>,
+    pub other_workflows: bool,
     pub actions: ActionsConfig,
 }
 
@@ -286,6 +290,7 @@ impl ResolvedConfig {
             defaults,
             hooks: file.hooks,
             workflows: file.workflows,
+            other_workflows: file.other_workflows.unwrap_or(repo.is_bare),
             actions: file.actions,
         })
     }
@@ -349,6 +354,7 @@ fn merge_config_files(files: impl IntoIterator<Item = ConfigFile>) -> ConfigFile
         merged.policy = file_policy.merge(&merged.policy);
         merge_workflow_maps(&mut merged.hooks, file.hooks);
         merge_workflow_maps(&mut merged.workflows, file.workflows);
+        merged.other_workflows = file.other_workflows.or(merged.other_workflows);
         merged.actions = merged.actions.merge(&file.actions);
     }
     merged

@@ -265,7 +265,7 @@ Optional config lives in:
 
 The same `.yaml` filenames are also accepted. Config is loaded in order from system, user, then project config, so project config wins. `--config path/to/file.yml` uses that file for normal config while still keeping system/user `policy` and `locked` sections.
 
-Supported defaults include shell, quiet/silent output, fail-fast, tech stack, architecture, container settings, container runtime, git mode/command/image, default install mode, recursive checkout, default branch allowlist, artifact store, and actions cache.
+Supported defaults include shell, quiet/silent output, fail-fast, tech stack, architecture, container settings, container runtime, git mode/command/image, default install mode, recursive checkout, default branch allowlist, artifact store, and actions cache. By default, `.github/workflows` and `.gitea/workflows` are discovered only in bare repositories; set `other_workflows: true` or `other_workflows: false` to override that while keeping native `.ci` workflows enabled.
 
 Example:
 
@@ -295,6 +295,7 @@ git_mode: auto
 git_image: docker.io/alpine/git:latest
 install_mode: copy
 recursive_checkout: true
+other_workflows: false
 
 locked:
   install_mode: copy

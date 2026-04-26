@@ -47,6 +47,70 @@ fn list_auto_detects_default_rust_build_workflow() {
     assert!(stdout.contains(".ci/build.yml"));
 }
 
+fn write_native_and_github_workflows(repo: &TestRepo) {
+    repo.write(
+        ".ci/build.yml",
+        r#"
+on: [manual]
+steps:
+  - run: echo native
+"#,
+    );
+    repo.write(
+        ".github/workflows/release.yml",
+        r#"
+name: Release
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo build --release
+"#,
+    );
+}
+
+#[test]
+fn non_bare_repos_disable_other_workflows_by_default() {
+    let repo = TestRepo::new();
+    write_native_and_github_workflows(&repo);
+
+    let mut command = repo.ci();
+    command.args(["list", "--porcelain"]);
+    let output = assert_success(output(command));
+    let stdout = stdout(&output);
+
+    assert!(stdout.contains("build\tnative\tyaml\t"));
+    assert!(!stdout.contains("Release\tgithub-actions"));
+}
+
+#[test]
+fn bare_repos_enable_other_workflows_by_default() {
+    let repo = TestRepo::new_bare();
+    write_native_and_github_workflows(&repo);
+
+    let mut command = repo.ci();
+    command.args(["list", "--porcelain"]);
+    let output = assert_success(output(command));
+    let stdout = stdout(&output);
+
+    assert!(stdout.contains("build\tnative\tyaml\t"));
+    assert!(stdout.contains("Release\tgithub-actions"));
+}
+
+#[test]
+fn config_can_override_other_workflow_discovery_default() {
+    let repo = TestRepo::new();
+    repo.write(".ci/config.yml", "other_workflows: true\n");
+    write_native_and_github_workflows(&repo);
+
+    let mut command = repo.ci();
+    command.args(["list", "--porcelain"]);
+    let output = assert_success(output(command));
+
+    assert!(stdout(&output).contains("Release\tgithub-actions"));
+}
+
 #[test]
 fn init_detects_rust_and_writes_container_ready_workflow() {
     let repo = TestRepo::new();

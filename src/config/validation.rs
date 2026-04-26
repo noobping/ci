@@ -132,6 +132,8 @@ const ROOT_CONFIG_KEYS: &[&str] = &[
     "artifact-store",
     "actions_cache",
     "actions-cache",
+    "other_workflows",
+    "other-workflows",
     "branches",
     "defaults",
     "policy",
