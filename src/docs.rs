@@ -179,8 +179,7 @@ steps:
 Step-level packages and Rust components build a generated image for that step, using the step image as the base image. Set container: false on a step to run it on the host. ci run --no-container disables workflow and step containers for native YAML workflows.
 .SH SETTINGS EXAMPLE
 .EX
-quiet: true
-# silent: true
+silent: true
 tech: rust
 arch: [x64, arm64]
 container:

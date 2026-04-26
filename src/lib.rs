@@ -57,7 +57,11 @@ fn run(cli: Cli, doctor_alias: bool, bootstrap_output: Output) -> Result<i32> {
     let bootstrap_git = GitService::bootstrap(&cli.global, bootstrap_output.clone());
     let mut repo = RepoInfo::discover(&cli.global, &bootstrap_git)?;
     let config = config::ResolvedConfig::load(&repo, &cli.global)?;
-    let output = Output::from_settings(&cli.global, Some(&config.defaults));
+    let output = Output::from_settings_with_policy(
+        &cli.global,
+        Some(&config.defaults),
+        Some(&config.policy),
+    );
 
     if doctor_alias {
         output.warn("`doctor` is deprecated; use `status`");

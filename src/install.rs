@@ -209,7 +209,8 @@ fn update_context_for_repo(
 ) -> Result<AppContext> {
     let mut repo = RepoInfo::discover(global, bootstrap_git)?;
     let config = ResolvedConfig::load(&repo, global)?;
-    let output = Output::from_settings(global, Some(&config.defaults));
+    let output =
+        Output::from_settings_with_policy(global, Some(&config.defaults), Some(&config.policy));
     let git = GitService::configured(&config.defaults, global, output.clone());
     repo.apply_defaults(&config.defaults);
     repo.refresh_branch(&git)?;

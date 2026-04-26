@@ -5,7 +5,7 @@ use tracing::Level;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 
 use crate::cli::GlobalOptions;
-use crate::config::{ColorWhen, Defaults};
+use crate::config::{ColorWhen, Defaults, DefaultsConfig};
 
 static INIT_TRACING: Once = Once::new();
 
@@ -28,21 +28,57 @@ impl Output {
     }
 
     pub fn from_settings(global: &GlobalOptions, defaults: Option<&Defaults>) -> Self {
+        Self::from_settings_with_policy(global, defaults, None)
+    }
+
+    pub fn from_settings_with_policy(
+        global: &GlobalOptions,
+        defaults: Option<&Defaults>,
+        policy: Option<&DefaultsConfig>,
+    ) -> Self {
         init_tracing(global);
 
-        let defaults_quiet = defaults.map(|value| value.quiet).unwrap_or(false);
-        let defaults_silent = defaults.map(|value| value.silent).unwrap_or(false);
+        let mut verbose = global.verbose;
+        let mut quiet = defaults.map(|value| value.quiet).unwrap_or(false);
+        let mut silent = defaults.map(|value| value.silent).unwrap_or(false);
 
-        let verbosity = if global.verbose > 0 {
-            Verbosity::Verbose(global.verbose)
-        } else if global.quiet {
-            Verbosity::Quiet
-        } else if global.silent {
+        if global.verbose > 0 {
+            quiet = false;
+            silent = false;
+        } else {
+            if global.quiet {
+                quiet = true;
+                silent = false;
+            }
+            if global.silent {
+                quiet = false;
+                silent = true;
+            }
+        }
+
+        if let Some(policy) = policy {
+            if let Some(value) = policy.quiet {
+                quiet = value;
+                if value {
+                    verbose = 0;
+                    silent = false;
+                }
+            }
+            if let Some(value) = policy.silent {
+                silent = value;
+                if value {
+                    verbose = 0;
+                    quiet = false;
+                }
+            }
+        }
+
+        let verbosity = if verbose > 0 {
+            Verbosity::Verbose(verbose)
+        } else if silent {
             Verbosity::Silent
-        } else if defaults_quiet {
+        } else if quiet {
             Verbosity::Quiet
-        } else if defaults_silent {
-            Verbosity::Silent
         } else {
             Verbosity::Normal
         };

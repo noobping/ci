@@ -2,7 +2,8 @@ use std::path::PathBuf;
 
 use crate::cli::GlobalOptions;
 use crate::config::{
-    Architecture, ColorWhen, ContainerConfig, ContainerRuntime, Defaults, GitMode, InstallMode,
+    Architecture, ColorWhen, ContainerConfig, ContainerRuntime, Defaults, DefaultsConfig, GitMode,
+    InstallMode,
 };
 
 use super::{Output, Verbosity};
@@ -83,6 +84,38 @@ fn verbose_overrides_config_silent() {
     assert_eq!(
         Output::from_settings(&global, Some(&defaults)).verbosity(),
         Verbosity::Verbose(1)
+    );
+}
+
+#[test]
+fn policy_silent_overrides_verbose() {
+    let mut global = globals();
+    global.verbose = 1;
+    let defaults = defaults(false, false);
+    let policy = DefaultsConfig {
+        silent: Some(true),
+        ..DefaultsConfig::default()
+    };
+
+    assert_eq!(
+        Output::from_settings_with_policy(&global, Some(&defaults), Some(&policy)).verbosity(),
+        Verbosity::Silent
+    );
+}
+
+#[test]
+fn policy_quiet_overrides_verbose() {
+    let mut global = globals();
+    global.verbose = 1;
+    let defaults = defaults(false, false);
+    let policy = DefaultsConfig {
+        quiet: Some(true),
+        ..DefaultsConfig::default()
+    };
+
+    assert_eq!(
+        Output::from_settings_with_policy(&global, Some(&defaults), Some(&policy)).verbosity(),
+        Verbosity::Quiet
     );
 }
 
