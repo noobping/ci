@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use clap::{ArgAction, Args, Parser, Subcommand};
 
 use crate::config::{
-    Architecture, ArtifactMode, ColorWhen, ContainerRuntime, ContainerType, GitMode, InstallMode,
+    Architecture, ArtifactMode, ColorWhen, ContainerRuntime, ContainerType, GitCommand, GitMode,
+    InstallMode,
 };
 use crate::workflow::is_known_hook;
 
@@ -81,6 +82,14 @@ pub struct GlobalOptions {
         help = "Choose how git commands are executed"
     )]
     pub git_mode: Option<GitMode>,
+
+    #[arg(
+        long = "git-command",
+        global = true,
+        value_name = "COMMAND",
+        help = "Command used to run git, for example `flatpak-spawn --host git`"
+    )]
+    pub git_command: Option<GitCommand>,
 
     #[arg(
         long = "git-image",
@@ -465,7 +474,8 @@ fn find_command_index(argv: &[OsString]) -> Option<usize> {
         let current = argv[i].to_string_lossy();
         match current.as_ref() {
             "--repo" | "--repository" | "--ci-dir" | "--config" | "--color" | "--git-mode"
-            | "--git-image" | "--arch" | "--type" | "--tech" | "--tech-stack" | "-t" => {
+            | "--git-command" | "--git-image" | "--arch" | "--type" | "--tech" | "--tech-stack"
+            | "-t" => {
                 i += 2;
             }
             value if value.starts_with('-') => {

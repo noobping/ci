@@ -101,6 +101,37 @@ fn repo_aliases_work_before_rewritten_workflow() {
 }
 
 #[test]
+fn git_command_global_option_works_before_rewritten_workflow() {
+    let cli = Cli::try_parse_from(rewrite([
+        "ci",
+        "--git-mode",
+        "custom",
+        "--git-command",
+        "flatpak-spawn --host git",
+        "build",
+    ]))
+    .expect("parse");
+
+    assert_eq!(
+        cli.global
+            .git_command
+            .as_ref()
+            .expect("git command")
+            .parts(),
+        [
+            "flatpak-spawn".to_string(),
+            "--host".to_string(),
+            "git".to_string()
+        ]
+        .as_slice()
+    );
+    match cli.command {
+        Commands::Run(args) => assert_eq!(args.workflow.as_deref(), Some("build")),
+        _ => panic!("expected run command"),
+    }
+}
+
+#[test]
 fn update_recursive_short_accepts_optional_path() {
     let cli = Cli::try_parse_from(rewrite(["ci", "update", "-r", "/tmp/projects"])).expect("parse");
 

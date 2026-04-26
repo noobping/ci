@@ -12,7 +12,7 @@ mod validation;
 
 pub use self::types::{
     format_arches, ArchFilter, Architecture, ArtifactConfig, ArtifactMode, ColorWhen,
-    ContainerRuntime, ContainerType, EventFilter, GitMode, InstallMode,
+    ContainerRuntime, ContainerType, EventFilter, GitCommand, GitMode, InstallMode,
 };
 use self::validation::validate_config_keys;
 use crate::error::Result;
@@ -120,6 +120,8 @@ pub struct DefaultsConfig {
     pub container_runtime: Option<ContainerRuntime>,
     #[serde(alias = "git-mode")]
     pub git_mode: Option<GitMode>,
+    #[serde(alias = "git-command")]
+    pub git_command: Option<GitCommand>,
     #[serde(alias = "git-image")]
     pub git_image: Option<String>,
     #[serde(alias = "install-mode")]
@@ -169,6 +171,7 @@ pub struct Defaults {
     pub container: ContainerConfig,
     pub container_runtime: ContainerRuntime,
     pub git_mode: GitMode,
+    pub git_command: Option<GitCommand>,
     pub git_image: String,
     pub install_mode: InstallMode,
     pub recursive_checkout: bool,
@@ -235,6 +238,11 @@ impl ResolvedConfig {
                 .or(global.git_mode)
                 .or(file_defaults.git_mode)
                 .unwrap_or(GitMode::Auto),
+            git_command: policy_defaults
+                .git_command
+                .clone()
+                .or_else(|| global.git_command.clone())
+                .or_else(|| file_defaults.git_command.clone()),
             git_image: policy_defaults
                 .git_image
                 .clone()
@@ -460,6 +468,7 @@ impl DefaultsConfig {
             && self.container.is_empty()
             && self.container_runtime.is_none()
             && self.git_mode.is_none()
+            && self.git_command.is_none()
             && self.git_image.is_none()
             && self.install_mode.is_none()
             && self.recursive_checkout.is_none()
@@ -480,6 +489,10 @@ impl DefaultsConfig {
             container: self.container.merge(&other.container),
             container_runtime: other.container_runtime.or(self.container_runtime),
             git_mode: other.git_mode.or(self.git_mode),
+            git_command: other
+                .git_command
+                .clone()
+                .or_else(|| self.git_command.clone()),
             git_image: other.git_image.clone().or_else(|| self.git_image.clone()),
             install_mode: other.install_mode.or(self.install_mode),
             recursive_checkout: other.recursive_checkout.or(self.recursive_checkout),

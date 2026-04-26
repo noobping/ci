@@ -4,7 +4,7 @@ use serde_yaml::Value;
 
 use super::{
     default_container_config, merge_config_files, validate_config_keys, ConfigFile, ContainerType,
-    InstallMode,
+    GitMode, InstallMode,
 };
 
 #[test]
@@ -291,6 +291,60 @@ policy:
 
     assert_eq!(file.defaults.install_mode, Some(InstallMode::Copy));
     assert_eq!(file.policy.install_mode, Some(InstallMode::Link));
+}
+
+#[test]
+fn config_accepts_git_mode_and_command() {
+    let string_command: ConfigFile = serde_yaml::from_str(
+        r#"
+defaults:
+  git-mode: custom
+  git-command: flatpak-spawn --host git
+"#,
+    )
+    .expect("parse string git command");
+
+    assert_eq!(string_command.defaults.git_mode, Some(GitMode::Custom));
+    assert_eq!(
+        string_command
+            .defaults
+            .git_command
+            .as_ref()
+            .expect("git command")
+            .parts(),
+        [
+            "flatpak-spawn".to_string(),
+            "--host".to_string(),
+            "git".to_string()
+        ]
+        .as_slice()
+    );
+
+    let list_command: ConfigFile = serde_yaml::from_str(
+        r#"
+defaults:
+  git-command:
+    - flatpak-spawn
+    - --host
+    - git
+"#,
+    )
+    .expect("parse list git command");
+
+    assert_eq!(
+        list_command
+            .defaults
+            .git_command
+            .as_ref()
+            .expect("git command")
+            .parts(),
+        [
+            "flatpak-spawn".to_string(),
+            "--host".to_string(),
+            "git".to_string()
+        ]
+        .as_slice()
+    );
 }
 
 #[test]

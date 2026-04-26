@@ -7,7 +7,7 @@ use fs2::FileExt;
 use crate::artifacts::load_manifests;
 use crate::cli::{ExplainArgs, StatusArgs};
 use crate::conditions::{evaluate_condition, interpolate_expressions, ExpressionContext};
-use crate::config::{format_arches, Architecture};
+use crate::config::{format_arches, Architecture, GitMode};
 use crate::containers::container_platform;
 use crate::git::{command_exists, preferred_container_runtime};
 use crate::install::{inspect_installation, BinaryState};
@@ -135,6 +135,15 @@ pub fn cmd_status(ctx: &AppContext, _args: &StatusArgs) -> crate::error::Result<
             "missing"
         }
     );
+    println!(
+        "OK   git mode: {}",
+        format!("{:?}", ctx.git.mode()).to_ascii_lowercase()
+    );
+    if let Some(command) = ctx.git.command() {
+        println!("OK   git command: {}", command.render());
+    } else if matches!(ctx.git.mode(), GitMode::Flatpak) {
+        println!("OK   git command: flatpak-spawn --host git");
+    }
     println!(
         "{}   node {}",
         if command_exists("node") { "OK" } else { "WARN" },

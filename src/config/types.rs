@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use clap::ValueEnum;
+use serde::de::{SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -131,6 +132,76 @@ pub enum GitMode {
     #[default]
     Auto,
     Alias,
+    Flatpak,
+    Custom,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct GitCommand(Vec<String>);
+
+impl GitCommand {
+    pub fn new(parts: Vec<String>) -> std::result::Result<Self, String> {
+        if parts.is_empty() {
+            return Err("git command must not be empty".to_string());
+        }
+        if parts.iter().any(|part| part.trim().is_empty()) {
+            return Err("git command parts must not be empty".to_string());
+        }
+        Ok(Self(parts))
+    }
+
+    pub fn parts(&self) -> &[String] {
+        &self.0
+    }
+
+    pub fn render(&self) -> String {
+        self.0.join(" ")
+    }
+}
+
+impl FromStr for GitCommand {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        Self::new(value.split_whitespace().map(str::to_string).collect())
+    }
+}
+
+impl<'de> Deserialize<'de> for GitCommand {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct GitCommandVisitor;
+
+        impl<'de> Visitor<'de> for GitCommandVisitor {
+            type Value = GitCommand;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a git command string or list of command parts")
+            }
+
+            fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                GitCommand::from_str(value).map_err(E::custom)
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut parts = Vec::new();
+                while let Some(part) = seq.next_element::<String>()? {
+                    parts.push(part);
+                }
+                GitCommand::new(parts).map_err(serde::de::Error::custom)
+            }
+        }
+
+        deserializer.deserialize_any(GitCommandVisitor)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]

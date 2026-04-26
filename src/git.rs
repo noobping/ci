@@ -1,9 +1,10 @@
+use std::env;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use crate::cli::GlobalOptions;
-use crate::config::{Defaults, GitMode};
+use crate::config::{Defaults, GitCommand, GitMode};
 use crate::error::{CiError, Result};
 use crate::output::Output as CliOutput;
 use crate::repo::RepoInfo;
@@ -18,6 +19,7 @@ pub enum CleanIgnoredMode {
 #[derive(Clone, Debug)]
 pub struct GitService {
     mode: GitMode,
+    command: Option<GitCommand>,
     image: String,
     output: CliOutput,
 }
@@ -26,6 +28,7 @@ impl GitService {
     pub fn bootstrap(global: &GlobalOptions, output: CliOutput) -> Self {
         Self {
             mode: global.git_mode.unwrap_or(GitMode::Auto),
+            command: global.git_command.clone(),
             image: global
                 .git_image
                 .clone()
@@ -34,19 +37,21 @@ impl GitService {
         }
     }
 
-    pub fn configured(defaults: &Defaults, global: &GlobalOptions, output: CliOutput) -> Self {
+    pub fn configured(defaults: &Defaults, _global: &GlobalOptions, output: CliOutput) -> Self {
         Self {
-            mode: global.git_mode.unwrap_or(defaults.git_mode),
-            image: global
-                .git_image
-                .clone()
-                .unwrap_or_else(|| defaults.git_image.clone()),
+            mode: defaults.git_mode,
+            command: defaults.git_command.clone(),
+            image: defaults.git_image.clone(),
             output,
         }
     }
 
     pub fn mode(&self) -> GitMode {
         self.mode
+    }
+
+    pub fn command(&self) -> Option<&GitCommand> {
+        self.command.as_ref()
     }
 
     pub fn output_in_dir(&self, dir: &Path, args: &[&str]) -> Result<String> {
@@ -201,24 +206,66 @@ impl GitService {
             self.output.is_quiet_or_silent(),
         );
         self.output.verbose(format!("git {}", args.join(" ")));
-        match self.execution_mode() {
-            ExecutionMode::Host => Command::new("git")
+        match self.execution_mode(dir) {
+            Ok(ExecutionMode::Custom(command)) => self.run_git_command(dir, &command, &args),
+            Ok(ExecutionMode::FlatpakHost) => Command::new("flatpak-spawn")
+                .arg("--host")
+                .arg("git")
                 .current_dir(dir)
                 .args(&args)
                 .output()
                 .map_err(Into::into),
-            ExecutionMode::Container(runtime) => self.run_git_container(&runtime, dir, &args),
+            Ok(ExecutionMode::Host) => Command::new("git")
+                .current_dir(dir)
+                .args(&args)
+                .output()
+                .map_err(Into::into),
+            Ok(ExecutionMode::Container(runtime)) => self.run_git_container(&runtime, dir, &args),
+            Err(err) => Err(err),
         }
     }
 
-    fn execution_mode(&self) -> ExecutionMode {
+    fn execution_mode(&self, dir: &Path) -> Result<ExecutionMode> {
         match self.mode {
-            GitMode::Host => ExecutionMode::Host,
-            GitMode::Auto if command_exists("git") => ExecutionMode::Host,
-            GitMode::Auto | GitMode::Alias => {
-                ExecutionMode::Container(preferred_container_runtime())
+            GitMode::Custom => self
+                .command
+                .clone()
+                .map(ExecutionMode::Custom)
+                .ok_or_else(|| CiError::Usage("git-mode custom requires git-command".to_string())),
+            GitMode::Flatpak => Ok(ExecutionMode::FlatpakHost),
+            GitMode::Host => Ok(ExecutionMode::Host),
+            GitMode::Auto => {
+                if let Some(command) = &self.command {
+                    Ok(ExecutionMode::Custom(command.clone()))
+                } else if flatpak_host_available_in_dir(dir) {
+                    Ok(ExecutionMode::FlatpakHost)
+                } else if command_exists("git") {
+                    Ok(ExecutionMode::Host)
+                } else {
+                    Ok(ExecutionMode::Container(preferred_container_runtime()))
+                }
             }
+            GitMode::Alias => Ok(ExecutionMode::Container(preferred_container_runtime())),
         }
+    }
+
+    fn run_git_command(
+        &self,
+        dir: &Path,
+        git_command: &GitCommand,
+        args: &[&str],
+    ) -> Result<Output> {
+        let Some((program, command_args)) = git_command.parts().split_first() else {
+            return Err(CiError::Message(
+                "git command must not be empty".to_string(),
+            ));
+        };
+        Command::new(program)
+            .current_dir(dir)
+            .args(command_args)
+            .args(args)
+            .output()
+            .map_err(Into::into)
     }
 
     fn run_git_container(&self, runtime: &str, dir: &Path, args: &[&str]) -> Result<Output> {
@@ -319,8 +366,31 @@ fn has_verbose_arg(args: &[&str]) -> bool {
 }
 
 enum ExecutionMode {
+    Custom(GitCommand),
+    FlatpakHost,
     Host,
     Container(String),
+}
+
+fn running_in_flatpak() -> bool {
+    env::var_os("FLATPAK_ID")
+        .filter(|value| !value.is_empty())
+        .is_some()
+        || Path::new("/.flatpak-info").exists()
+}
+
+fn flatpak_host_available_in_dir(dir: &Path) -> bool {
+    running_in_flatpak()
+        && command_exists("flatpak-spawn")
+        && Command::new("flatpak-spawn")
+            .arg("--host")
+            .arg("true")
+            .current_dir(dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
 }
 
 pub fn command_exists(name: &str) -> bool {

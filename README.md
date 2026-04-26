@@ -249,7 +249,7 @@ steps:
     run: printf '%s\n' "$HOME"
 ```
 
-Containerfile workflow and GitHub/Gitea examples are covered below. `ci` prefers `podman`, then falls back to `docker`. Git commands can use the host binary or fall back to `docker.io/alpine/git:latest` in `auto`/`alias` mode.
+Containerfile workflow and GitHub/Gitea examples are covered below. `ci` prefers `podman`, then falls back to `docker`. Git commands can use the host binary, `flatpak-spawn --host git`, a custom command wrapper, or fall back to `docker.io/alpine/git:latest` in `auto`/`alias` mode.
 
 ## Config
 
@@ -264,7 +264,7 @@ Optional config lives in:
 
 The same `.yaml` filenames are also accepted. Config is loaded in order from system, user, then project config, so project config wins. `--config path/to/file.yml` uses that file for normal config while still keeping system/user `policy` and `locked` sections.
 
-Supported defaults include shell, quiet/silent output, fail-fast, tech stack, architecture, container settings, container runtime, git mode/image, default install mode, recursive checkout, default branch allowlist, artifact store, and actions cache.
+Supported defaults include shell, quiet/silent output, fail-fast, tech stack, architecture, container settings, container runtime, git mode/command/image, default install mode, recursive checkout, default branch allowlist, artifact store, and actions cache.
 
 Example:
 
@@ -318,6 +318,16 @@ hooks:
 ```
 
 In `.ci/config.yml`, default fields can be written directly at the top level; wrapping them in `defaults:` is still accepted. In workflow files, `defaults:` can set workflow defaults such as `tech`, `container`, `execution`, `branches`, `artifacts`, and `env`; direct workflow fields override those defaults. Unknown YAML keys are rejected so misspelled fields fail early.
+
+`git_mode` accepts `auto`, `host`, `flatpak`, `custom`, or `alias`. In `auto` mode, `ci` detects Flatpak and uses `flatpak-spawn --host git` when available, then falls back to host `git` or the configured Git container image. Use `git_mode: custom` with `git_command` to force a wrapper; `git-command: "flatpak-spawn --host git"` and YAML lists are both accepted. The `--git-command` flag accepts the same command string.
+
+```yaml
+git_mode: custom
+git_command:
+  - flatpak-spawn
+  - --host
+  - git
+```
 
 `install_mode` accepts `link` or `copy` and is used when `ci install` is run without `--mode`; the CLI flag wins over normal config. Put defaults under `policy:` or `locked:` to apply them after normal config and CLI flags. For policy values, system config is strongest, then user config, then project config, so `/etc/ci.yml` can enforce a managed default such as:
 

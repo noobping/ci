@@ -427,6 +427,44 @@ fn status_reports_generated_workflows_and_architecture_diagnostics() {
 }
 
 #[test]
+fn status_can_use_custom_git_command_from_config() {
+    let repo = TestRepo::new();
+    let temp = TempDir::new().expect("create temp dir");
+    let log = temp.path().join("git.log");
+    let wrapper = temp.path().join("git-wrapper");
+    fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec git \"$@\"\n",
+            log.display()
+        ),
+    )
+    .expect("write git wrapper");
+    let mut permissions = fs::metadata(&wrapper)
+        .expect("wrapper metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&wrapper, permissions).expect("make wrapper executable");
+    repo.write(
+        ".ci/config.yml",
+        &format!(
+            "git-mode: custom\ngit-command:\n  - {}\n",
+            wrapper.display()
+        ),
+    );
+
+    let mut command = repo.ci();
+    command.arg("status");
+    let output = assert_success(output(command));
+    let stdout = stdout(&output);
+
+    assert!(stdout.contains("git mode: custom"));
+    assert!(stdout.contains(&format!("git command: {}", wrapper.display())));
+    let log = fs::read_to_string(log).expect("read git wrapper log");
+    assert!(log.contains("rev-parse --abbrev-ref HEAD"));
+}
+
+#[test]
 fn dry_run_reports_selected_workflow_without_running_steps() {
     let repo = TestRepo::new();
     repo.write(

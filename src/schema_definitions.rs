@@ -50,8 +50,10 @@ pub(crate) fn config_schema() -> serde_json::Value {
             "container": container_schema(),
             "container_runtime": runtime_schema(),
             "container-runtime": runtime_schema(),
-            "git_mode": { "enum": ["host", "auto", "alias"] },
-            "git-mode": { "enum": ["host", "auto", "alias"] },
+            "git_mode": git_mode_schema(),
+            "git-mode": git_mode_schema(),
+            "git_command": git_command_schema(),
+            "git-command": git_command_schema(),
             "git_image": { "type": "string" },
             "git-image": { "type": "string" },
             "install_mode": { "enum": ["link", "copy"] },
@@ -117,8 +119,10 @@ fn defaults_schema() -> serde_json::Value {
             "container": container_schema(),
             "container_runtime": runtime_schema(),
             "container-runtime": runtime_schema(),
-            "git_mode": { "enum": ["host", "auto", "alias"] },
-            "git-mode": { "enum": ["host", "auto", "alias"] },
+            "git_mode": git_mode_schema(),
+            "git-mode": git_mode_schema(),
+            "git_command": git_command_schema(),
+            "git-command": git_command_schema(),
             "git_image": { "type": "string" },
             "git-image": { "type": "string" },
             "install_mode": { "enum": ["link", "copy"] },
@@ -314,6 +318,19 @@ fn tech_schema() -> serde_json::Value {
 
 fn runtime_schema() -> serde_json::Value {
     json!({ "enum": ["auto", "podman", "docker"] })
+}
+
+fn git_mode_schema() -> serde_json::Value {
+    json!({ "enum": ["host", "auto", "alias", "flatpak", "custom"] })
+}
+
+fn git_command_schema() -> serde_json::Value {
+    json!({
+        "oneOf": [
+            { "type": "string" },
+            string_array_schema()
+        ]
+    })
 }
 
 fn string_array_schema() -> serde_json::Value {
