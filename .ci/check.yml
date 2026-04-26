@@ -1,7 +1,6 @@
 name: check
 on:
   - manual
-  - pre-push
 tech: rust
 
 steps:
