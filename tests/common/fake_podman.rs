@@ -119,6 +119,30 @@ exec "$@"
     bin_dir
 }
 
+pub fn make_fake_shell(dir: &Path) -> PathBuf {
+    let bin_dir = dir.join("sh-bin");
+    fs::create_dir_all(&bin_dir).expect("create fake sh bin dir");
+    let sh = bin_dir.join("sh");
+    fs::write(
+        &sh,
+        r#"#!/bin/sh
+exec /bin/sh "$@"
+"#,
+    )
+    .expect("write fake sh");
+    let mut permissions = fs::metadata(&sh).expect("fake sh metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&sh, permissions).expect("make fake sh executable");
+    bin_dir
+}
+
+pub fn path_with_fake_bins(fake_bins: &[PathBuf]) -> String {
+    std::env::join_paths(fake_bins)
+        .expect("join fake PATH")
+        .to_string_lossy()
+        .to_string()
+}
+
 pub fn path_with_fake_bin(fake_bin: &Path) -> String {
     let current = std::env::var_os("PATH").unwrap_or_default();
     let mut paths = vec![fake_bin.to_path_buf()];

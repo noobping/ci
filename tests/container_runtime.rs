@@ -3,7 +3,10 @@ mod common;
 use tempfile::TempDir;
 
 use common::assertions::{assert_failure, assert_success, output, stderr};
-use common::fake_podman::{make_fake_flatpak_spawn, make_fake_podman, path_with_fake_bin};
+use common::fake_podman::{
+    make_fake_flatpak_spawn, make_fake_podman, make_fake_shell, path_with_fake_bin,
+    path_with_fake_bins,
+};
 use common::repo::TestRepo;
 
 fn default_platform() -> String {
@@ -78,6 +81,17 @@ fn auto_runtime_uses_flatpak_host_podman_when_inside_flatpak() {
     let fake = TempDir::new().expect("fake podman dir");
     let host_bin = make_fake_podman(fake.path());
     let flatpak_bin = make_fake_flatpak_spawn(fake.path(), &host_bin);
+    let sh_bin = make_fake_shell(fake.path());
+    let git = String::from_utf8(
+        std::process::Command::new("sh")
+            .arg("-c")
+            .arg("command -v git")
+            .output()
+            .expect("find host git")
+            .stdout,
+    )
+    .expect("git path utf8");
+    let git = git.trim();
     repo.write(
         ".ci/build.yml",
         r#"
@@ -94,8 +108,16 @@ steps:
     let mut command = repo.ci();
     command
         .env("FLATPAK_ID", "dev.test.CI")
-        .env("PATH", format!("{}:/bin", flatpak_bin.display()))
-        .args(["run", "build"]);
+        .env("PATH", path_with_fake_bins(&[flatpak_bin, sh_bin]))
+        .args([
+            "--git-mode",
+            "custom",
+            "--git-command",
+            git,
+            "run",
+            "--no-recursive-checkout",
+            "build",
+        ]);
     assert_success(output(command));
 
     assert_eq!(repo.read("container.txt"), "flatpak-host");
