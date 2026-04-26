@@ -55,7 +55,8 @@ const LINK_ACTION_NAMES: &[&str] = &["link", "ci/link", "symlink", "ci/symlink"]
 const COMMIT_ACTION_NAMES: &[&str] = &["commit", "ci/commit"];
 const SYNC_ACTION_NAMES: &[&str] = &["sync", "ci/sync"];
 const COMMIT_PATH_INPUT_KEYS: &[&str] = &[
-    "path", "paths", "source", "sources", "src", "srcs", "from", "froms",
+    "path", "paths", "file", "files", "pattern", "patterns", "source", "sources", "src", "srcs",
+    "from", "froms",
 ];
 const REMOTE_SOURCE_INPUT_KEYS: &[&str] = &["source", "src", "from"];
 const REMOTE_DESTINATION_INPUT_KEYS: &[&str] =

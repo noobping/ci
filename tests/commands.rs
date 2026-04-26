@@ -1,6 +1,7 @@
 mod common;
 
 use std::fs;
+use std::process::Command;
 
 use common::assertions::{assert_failure, assert_success, ci_command, output, stderr, stdout};
 use common::repo::TestRepo;
@@ -212,6 +213,44 @@ steps:
         fs::read_link(repo.path().join("dist/ci")).unwrap(),
         std::path::PathBuf::from("ci.x64")
     );
+}
+
+#[test]
+fn commit_action_stages_generated_pattern_before_committing() {
+    let repo = TestRepo::new();
+    repo.write(
+        ".ci/build.yml",
+        r#"
+on: [manual]
+steps:
+  - run: |
+      mkdir -p generated
+      printf one > generated/one.txt
+      printf two > generated/two.log
+      printf skip > skip.txt
+  - use: commit
+    patterns: generated/*.txt
+    message: "ci: commit generated text"
+"#,
+    );
+
+    let mut command = repo.ci();
+    command.args(["run", "build"]);
+    assert_success(output(command));
+
+    let tree = assert_success(
+        Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(["ls-tree", "-r", "--name-only", "HEAD"])
+            .output()
+            .expect("list HEAD tree"),
+    );
+    let tree = stdout(&tree);
+
+    assert!(tree.contains("generated/one.txt"));
+    assert!(!tree.contains("generated/two.log"));
+    assert!(!tree.contains("skip.txt"));
 }
 
 #[test]

@@ -171,7 +171,7 @@ Native `.ci/*.yml` steps can also use built-in `uses:` or `use:` action sources.
 - `download-artifact`: restore artifacts using `with.name` and optional `with.path`
 - `export`: copy `source`/`src`/`from` paths to `destination`/`dest`/`to`; multiple sources use the destination as a directory, while a single source can use an exact file path; set `replace: true` or `overwrite: true` to replace an existing target
 - `link`: create symlinks from `source`/`src`/`from` to `destination`/`dest`/`to`; multiple sources use the destination as a directory, while a single source can use an exact link path; set `replace: true` or `overwrite: true` to replace an existing target
-- `commit`: stage paths and create a commit with `message`/`msg`; staged paths may use `path`, `source`, `src`, or `from`
+- `commit`: stage paths and create a commit with `message`/`msg`; without paths it stages all changes with `git add -A`; staged paths may use `path`, `paths`, `file`, `files`, `pattern`, `patterns`, `source`, `src`, or `from`; set `staged: true` to commit only already staged changes
 - `sync`: pull and push the current branch, or use `mirror: true` with `source`/`src`/`from` and `destination`/`dest`/`to` remotes
 - `clean`: run `git clean -fd` by default; `ignored: true` maps to `git clean -fdx`, `ignored: only` maps to `git clean -fdX`, `purge: true` runs `git fetch --all --prune`, `cargo: true` runs `cargo clean`, `path` or `paths` removes repo-relative targets, and native `.ci/*.yml` steps may extend the cleanup with an inline `run:` block
 
@@ -192,6 +192,13 @@ steps:
     replace: true
   - use: commit
     message: "ci: update generated outputs"
+  - name: Generate AUR metadata
+    run: makepkg --printsrcinfo > .SRCINFO
+  - use: commit
+    paths:
+      - PKGBUILD
+      - .SRCINFO
+    message: "aur: update package metadata"
   - use: sync
     strategy: rebase
   - use: clean
