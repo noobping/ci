@@ -122,7 +122,8 @@ ci install --mode link --hooks pre-commit,pre-push
 ci man --dir ~/.local/share/man/man1
 .EE
 .SH PRECEDENCE
-CLI flags override workflow fields, workflow fields override workflow defaults, workflow defaults override project config, project config overrides user config, user config overrides system config, and config overrides auto-detection.
+CLI flags override workflow fields, workflow fields override workflow defaults, workflow defaults override project config, project config overrides user config, user config overrides system config, and config overrides auto-detection. Values under policy or locked are applied after normal config and CLI flags; system policy is strongest, then user policy, then project policy.
+--config replaces normal config discovery but keeps system and user policy/locked sections.
 .SH NATIVE WORKFLOW EXAMPLE
 .EX
 name: build
@@ -222,7 +223,7 @@ ci install --backup-existing
 Link mode creates architecture-specific runners such as .git/ci/run.x64.
 Link mode always links to the current ci executable and removes other managed run.<arch> files.
 Copy mode copies the current ci binary into the repository. Hooks are direct symlinks with one runner and small selector scripts with multiple runners.
-The install_mode config default accepts link or copy and is used when --mode is omitted.
+The install_mode config default accepts link or copy and is used when --mode is omitted. policy.install_mode or locked.install_mode overrides --mode.
 "#,
         ),
         "ci-uninstall" => Some(

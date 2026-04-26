@@ -52,7 +52,12 @@ pub struct HookState {
 pub fn cmd_install(ctx: &AppContext, args: &InstallArgs) -> Result<i32> {
     let hooks = parse_hooks(args.hooks.as_deref(), ctx.repo.is_bare)?;
     let ci_bin_dir = managed_runner_dir(&ctx.repo);
-    let mode = args.mode.unwrap_or(ctx.config.defaults.install_mode);
+    let mode = ctx
+        .config
+        .policy
+        .install_mode
+        .or(args.mode)
+        .unwrap_or(ctx.config.defaults.install_mode);
     let source = install_source_for_mode(&mode, args.source.as_deref());
     let target_arches =
         install_target_arches_for_mode(&mode, args.source.as_deref(), &ctx.config.defaults.arch);

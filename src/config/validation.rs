@@ -9,6 +9,7 @@ pub(crate) fn validate_config_keys(value: &Value, path: &Path) -> Result<()> {
     for (key, child) in mapping_entries(value, path, "config")? {
         match key.as_str() {
             "defaults" => validate_defaults_keys(child, path, "defaults")?,
+            "policy" | "locked" => validate_defaults_keys(child, path, &key)?,
             "hooks" | "workflows" => {
                 for (name, workflow) in mapping_entries(child, path, &key)? {
                     validate_workflow_override_keys(workflow, path, &format!("{key}.{name}"))?;
@@ -131,6 +132,8 @@ const ROOT_CONFIG_KEYS: &[&str] = &[
     "actions-cache",
     "branches",
     "defaults",
+    "policy",
+    "locked",
     "hooks",
     "workflows",
     "actions",

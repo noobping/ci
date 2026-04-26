@@ -194,7 +194,7 @@ pub fn cmd_explain(ctx: &AppContext, args: &ExplainArgs) -> crate::error::Result
     }
 
     println!(
-        "Precedence: CLI flags > workflow fields > workflow defaults > project config > user config > system config > auto-detect"
+        "Precedence: CLI flags > workflow fields > workflow defaults > project config > user config > system config > auto-detect; policy/locked applies last with system policy strongest"
     );
     for item in matches {
         let container_arches = item.resolved.container.arch.to_vec();

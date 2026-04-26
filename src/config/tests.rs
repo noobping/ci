@@ -283,11 +283,14 @@ fn config_accepts_default_install_mode() {
         r#"
 defaults:
   install-mode: copy
+policy:
+  install-mode: link
 "#,
     )
     .expect("parse install mode");
 
     assert_eq!(file.defaults.install_mode, Some(InstallMode::Copy));
+    assert_eq!(file.policy.install_mode, Some(InstallMode::Link));
 }
 
 #[test]
@@ -340,4 +343,37 @@ defaults:
             .collect::<Vec<_>>(),
         vec!["arm64"]
     );
+}
+
+#[test]
+fn locked_policy_merges_with_system_layer_strongest() {
+    let system: ConfigFile = serde_yaml::from_str(
+        r#"
+locked:
+  install-mode: link
+"#,
+    )
+    .expect("parse system config");
+    let user: ConfigFile = serde_yaml::from_str(
+        r#"
+policy:
+  install-mode: copy
+  shell: /bin/user-sh
+"#,
+    )
+    .expect("parse user config");
+    let project: ConfigFile = serde_yaml::from_str(
+        r#"
+locked:
+  shell: /bin/project-sh
+  quiet: true
+"#,
+    )
+    .expect("parse project config");
+
+    let merged = merge_config_files([system, user, project]);
+
+    assert_eq!(merged.policy.install_mode, Some(InstallMode::Link));
+    assert_eq!(merged.policy.shell.as_deref(), Some("/bin/user-sh"));
+    assert_eq!(merged.policy.quiet, Some(true));
 }

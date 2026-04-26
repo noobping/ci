@@ -250,7 +250,7 @@ Optional config lives in:
 .ci/config.yml
 ```
 
-The same `.yaml` filenames are also accepted. Config is loaded in order from system, user, then project config, so project config wins. `--config path/to/file.yml` uses only that file.
+The same `.yaml` filenames are also accepted. Config is loaded in order from system, user, then project config, so project config wins. `--config path/to/file.yml` uses that file for normal config while still keeping system/user `policy` and `locked` sections.
 
 Supported defaults include shell, quiet/silent output, fail-fast, tech stack, architecture, container settings, container runtime, git mode/image, default install mode, recursive checkout, default branch allowlist, artifact store, and actions cache.
 
@@ -283,6 +283,9 @@ git_image: docker.io/alpine/git:latest
 install_mode: copy
 recursive_checkout: true
 
+locked:
+  install_mode: copy
+
 branches:
   allow:
     - main
@@ -304,7 +307,12 @@ hooks:
 
 In `.ci/config.yml`, default fields can be written directly at the top level; wrapping them in `defaults:` is still accepted. In workflow files, `defaults:` can set workflow defaults such as `tech`, `container`, `execution`, `branches`, `artifacts`, and `env`; direct workflow fields override those defaults. Unknown YAML keys are rejected so misspelled fields fail early.
 
-`install_mode` accepts `link` or `copy` and is used when `ci install` is run without `--mode`; the CLI flag still wins.
+`install_mode` accepts `link` or `copy` and is used when `ci install` is run without `--mode`; the CLI flag wins over normal config. Put defaults under `policy:` or `locked:` to apply them after normal config and CLI flags. For policy values, system config is strongest, then user config, then project config, so `/etc/ci.yml` can enforce a managed default such as:
+
+```yaml
+locked:
+  install_mode: copy
+```
 
 `--arch` accepts comma-separated values and can be repeated, so `--arch x64,arm64` and `--arch x64 --arch arm64` are equivalent. `arch` accepts either one value or a YAML list and is also used as the default `container.arch` when the container arch list is omitted. Architecture is an execution setting. The selected execution architecture is exposed as `CI_ARCH`; the host machine architecture is exposed as `CI_HOST_ARCH`. Native YAML workflows can run inside a generated container with config-level `container`, workflow `defaults.container`, workflow-level `container`, or a selected tech stack; workflow-level settings override the defaults. Use `-c`/`--container` to force a generated container for native workflows, or `-C`/`--no-container` to ignore configured native containers and run native steps on the host. `tech`, `type`, `tech-stack`, and `container.type` accept `auto`, `general`, `rust`, `node`, `go`, `python`, `maven`, `gradle`, and `dotnet`; common aliases such as `npm`, `js`, `golang`, `py`, and `.net` are accepted. Omitted/`auto` detects the stack from project files and step commands, then falls back to a general Debian image. Rust containers support `components`, installed with `rustup component add`; `cargo-fmt` maps to `rustfmt` and `cargo-clippy` maps to `clippy`. Container `env`, `volumes`, `workdir`, and `readonly` are passed to native container runs. `container.readonly: true` mounts `/work` read-only; a native step can override it with `readonly: false` or opt into it with `readonly: true`. `read-only` and `read_only` are accepted aliases. When a container workflow, native container workflow, or action does not set `container.platform`, `ci` maps the selected arch to a podman/docker platform such as `linux/amd64` or `linux/arm64`.
 

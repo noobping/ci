@@ -144,6 +144,12 @@ pub struct ConfigFile {
     pub defaults: DefaultsConfig,
 
     #[serde(default)]
+    pub policy: DefaultsConfig,
+
+    #[serde(default)]
+    pub locked: DefaultsConfig,
+
+    #[serde(default)]
     pub hooks: BTreeMap<String, WorkflowOverride>,
 
     #[serde(default)]
@@ -177,6 +183,7 @@ pub struct ResolvedConfig {
     pub path: PathBuf,
     pub loaded: bool,
     pub paths: Vec<PathBuf>,
+    pub policy: DefaultsConfig,
     pub global_tech_stack: Option<ContainerType>,
     pub defaults: Defaults,
     pub hooks: BTreeMap<String, WorkflowOverride>,
@@ -190,13 +197,12 @@ impl ResolvedConfig {
             .config
             .clone()
             .unwrap_or_else(|| repo.ci_dir.join("config.yml"));
-        let candidates = if let Some(path) = &global.config {
-            vec![path.clone()]
+        let loaded_files = if let Some(path) = &global.config {
+            load_explicit_config_files(path)?
         } else {
-            default_config_paths(repo)
+            load_config_files(&default_config_paths(repo))?
         };
 
-        let loaded_files = load_config_files(&candidates)?;
         let loaded = !loaded_files.is_empty();
         let paths = loaded_files
             .iter()
@@ -204,44 +210,55 @@ impl ResolvedConfig {
             .collect::<Vec<_>>();
         let file = merge_config_files(loaded_files.into_iter().map(|(_, file)| file));
         let file_defaults = file.root_defaults.merge(&file.defaults);
+        let policy_defaults = file.policy;
+        let effective_defaults = file_defaults.merge(&policy_defaults);
 
         let defaults = Defaults {
-            shell: file_defaults
+            shell: effective_defaults
                 .shell
                 .clone()
                 .unwrap_or_else(|| "/bin/sh".to_string()),
-            quiet: file_defaults.quiet.unwrap_or(false),
-            silent: file_defaults.silent.unwrap_or(false),
-            fail_fast: file_defaults.fail_fast.unwrap_or(true),
-            arch: selected_arches(&global.arch, &file_defaults.arch),
-            container: default_container_config(&file_defaults),
-            container_runtime: file_defaults
+            quiet: effective_defaults.quiet.unwrap_or(false),
+            silent: effective_defaults.silent.unwrap_or(false),
+            fail_fast: effective_defaults.fail_fast.unwrap_or(true),
+            arch: selected_arches_with_policy(
+                &global.arch,
+                &file_defaults.arch,
+                &policy_defaults.arch,
+            ),
+            container: default_container_config(&effective_defaults),
+            container_runtime: effective_defaults
                 .container_runtime
                 .unwrap_or(ContainerRuntime::Auto),
-            git_mode: global
+            git_mode: policy_defaults
                 .git_mode
+                .or(global.git_mode)
                 .or(file_defaults.git_mode)
                 .unwrap_or(GitMode::Auto),
-            git_image: global
+            git_image: policy_defaults
                 .git_image
                 .clone()
+                .or_else(|| global.git_image.clone())
                 .or_else(|| file_defaults.git_image.clone())
                 .unwrap_or_else(|| DEFAULT_GIT_IMAGE.to_string()),
-            install_mode: file_defaults.install_mode.unwrap_or_default(),
-            recursive_checkout: file_defaults.recursive_checkout.unwrap_or(true),
-            branch_allow: if file_defaults.branches.allow.is_empty() {
+            install_mode: policy_defaults
+                .install_mode
+                .or(file_defaults.install_mode)
+                .unwrap_or_default(),
+            recursive_checkout: effective_defaults.recursive_checkout.unwrap_or(true),
+            branch_allow: if effective_defaults.branches.allow.is_empty() {
                 DEFAULT_BRANCHES
                     .iter()
                     .map(|item| (*item).to_string())
                     .collect()
             } else {
-                file_defaults.branches.allow.clone()
+                effective_defaults.branches.allow.clone()
             },
-            artifact_store: file_defaults
+            artifact_store: effective_defaults
                 .artifact_store
                 .clone()
                 .unwrap_or_else(|| PathBuf::from("artifacts")),
-            actions_cache: file_defaults
+            actions_cache: effective_defaults
                 .actions_cache
                 .clone()
                 .unwrap_or_else(|| PathBuf::from("actions-cache")),
@@ -256,7 +273,8 @@ impl ResolvedConfig {
             path: default_path,
             loaded,
             paths,
-            global_tech_stack: global.tech_stack,
+            policy: policy_defaults.clone(),
+            global_tech_stack: policy_defaults.tech_stack.or(global.tech_stack),
             defaults,
             hooks: file.hooks,
             workflows: file.workflows,
@@ -288,12 +306,39 @@ fn load_config_files(paths: &[PathBuf]) -> Result<Vec<(PathBuf, ConfigFile)>> {
     Ok(loaded)
 }
 
+fn load_explicit_config_files(path: &Path) -> Result<Vec<(PathBuf, ConfigFile)>> {
+    let mut loaded = load_policy_config_files(&base_policy_config_paths())?;
+    loaded.extend(load_config_files(&[path.to_path_buf()])?);
+    Ok(loaded)
+}
+
+fn load_policy_config_files(paths: &[PathBuf]) -> Result<Vec<(PathBuf, ConfigFile)>> {
+    Ok(load_config_files(paths)?
+        .into_iter()
+        .filter_map(|(path, file)| policy_only_config(file).map(|file| (path, file)))
+        .collect())
+}
+
+fn policy_only_config(file: ConfigFile) -> Option<ConfigFile> {
+    let policy = file.policy.merge(&file.locked);
+    if policy.is_empty() {
+        return None;
+    }
+
+    Some(ConfigFile {
+        policy,
+        ..ConfigFile::default()
+    })
+}
+
 fn merge_config_files(files: impl IntoIterator<Item = ConfigFile>) -> ConfigFile {
     let mut merged = ConfigFile::default();
     for file in files {
         merged.root_defaults = merged
             .root_defaults
             .merge(&file.root_defaults.merge(&file.defaults));
+        let file_policy = file.policy.merge(&file.locked);
+        merged.policy = file_policy.merge(&merged.policy);
         merge_workflow_maps(&mut merged.hooks, file.hooks);
         merge_workflow_maps(&mut merged.workflows, file.workflows);
         merged.actions = merged.actions.merge(&file.actions);
@@ -314,6 +359,13 @@ fn merge_workflow_maps(
 }
 
 fn default_config_paths(repo: &RepoInfo) -> Vec<PathBuf> {
+    let mut paths = base_policy_config_paths();
+    paths.push(repo.ci_dir.join("config.yml"));
+    paths.push(repo.ci_dir.join("config.yaml"));
+    paths
+}
+
+fn base_policy_config_paths() -> Vec<PathBuf> {
     let mut paths = vec![
         PathBuf::from("/etc/ci.yml"),
         PathBuf::from("/etc/ci.yaml"),
@@ -321,8 +373,6 @@ fn default_config_paths(repo: &RepoInfo) -> Vec<PathBuf> {
         PathBuf::from("/etc/ci/config.yaml"),
     ];
     paths.extend(user_config_paths());
-    paths.push(repo.ci_dir.join("config.yml"));
-    paths.push(repo.ci_dir.join("config.yaml"));
     paths
 }
 
@@ -349,6 +399,17 @@ fn user_config_paths() -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
+fn selected_arches_with_policy(
+    global: &[Architecture],
+    configured: &ArchFilter,
+    policy: &ArchFilter,
+) -> Vec<Architecture> {
+    if !policy.is_empty() {
+        return policy.to_vec();
+    }
+    selected_arches(global, configured)
+}
+
 fn selected_arches(global: &[Architecture], configured: &ArchFilter) -> Vec<Architecture> {
     if !global.is_empty() {
         return global.to_vec();
@@ -373,7 +434,41 @@ fn default_container_config(defaults: &DefaultsConfig) -> ContainerConfig {
     container
 }
 
+impl ContainerConfig {
+    fn is_empty(&self) -> bool {
+        self.kind.is_none()
+            && self.image.is_none()
+            && self.platform.is_none()
+            && self.workdir.is_none()
+            && self.readonly.is_none()
+            && self.arch.is_empty()
+            && self.packages.is_empty()
+            && self.components.is_empty()
+            && self.env.is_empty()
+            && self.volumes.is_empty()
+    }
+}
+
 impl DefaultsConfig {
+    fn is_empty(&self) -> bool {
+        self.shell.is_none()
+            && self.quiet.is_none()
+            && self.silent.is_none()
+            && self.fail_fast.is_none()
+            && self.tech_stack.is_none()
+            && self.arch.is_empty()
+            && self.container.is_empty()
+            && self.container_runtime.is_none()
+            && self.git_mode.is_none()
+            && self.git_image.is_none()
+            && self.install_mode.is_none()
+            && self.recursive_checkout.is_none()
+            && self.artifact_store.is_none()
+            && self.actions_cache.is_none()
+            && self.branches.allow.is_empty()
+            && self.branches.only.is_empty()
+    }
+
     pub fn merge(&self, other: &Self) -> Self {
         Self {
             shell: other.shell.clone().or_else(|| self.shell.clone()),

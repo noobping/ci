@@ -19,6 +19,8 @@ pub(crate) fn config_schema() -> serde_json::Value {
         "additionalProperties": false,
         "properties": {
             "defaults": defaults,
+            "policy": defaults,
+            "locked": defaults,
             "hooks": {
                 "type": "object",
                 "additionalProperties": workflow_override_schema()
