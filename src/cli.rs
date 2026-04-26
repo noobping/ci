@@ -155,6 +155,8 @@ pub enum Commands {
     Init(InitArgs),
     #[command(name = "self", about = "Print information about the ci binary")]
     SelfCmd(SelfArgs),
+    #[command(about = "Compare the installed repository ci runner with this binary")]
+    Other(OtherArgs),
 }
 
 #[derive(Clone, Debug, Args, Default)]
@@ -392,6 +394,9 @@ pub struct ManArgs {
 #[derive(Clone, Debug, Args, Default)]
 pub struct SelfArgs {}
 
+#[derive(Clone, Debug, Args)]
+pub struct OtherArgs {}
+
 pub fn rewrite_argv(mut argv: Vec<OsString>) -> Vec<OsString> {
     if argv.is_empty() {
         return argv;
@@ -466,6 +471,7 @@ fn is_known_command(command: &OsStr) -> bool {
                 | "man"
                 | "init"
                 | "self"
+                | "other"
                 | "help"
         )
     )

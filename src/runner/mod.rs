@@ -1,16 +1,19 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::IsTerminal;
+use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use crate::artifacts::ArtifactSession;
-use crate::cli::{GlobalOptions, HookArgs, InitArgs, ListArgs, RunArgs, SelfArgs};
+use crate::cli::{GlobalOptions, HookArgs, InitArgs, ListArgs, OtherArgs, RunArgs, SelfArgs};
 use crate::config::{Architecture, ContainerRuntime, ContainerType, ResolvedConfig};
 use crate::containers::{container_platform, ContainerBackend, ContainerShellSpec};
 use crate::defaults::{generated_default_workflows, init_build_workflow_content};
 use crate::error::{CiError, Result};
 use crate::git::{command_exists, sanitize_component, GitService};
+use crate::install::{inspect_installation, BinaryState};
 use crate::output::Output;
 use crate::repo::RepoInfo;
 
@@ -255,6 +258,77 @@ pub fn cmd_self(ctx: &AppContext, _args: &SelfArgs) -> Result<i32> {
     println!("executable: {}", ctx.repo.current_exe.display());
     println!("repository: {}", ctx.repo.root.display());
     Ok(0)
+}
+
+pub fn cmd_other(ctx: &AppContext, _args: &OtherArgs) -> Result<i32> {
+    let current_hash = file_content_hash(&ctx.repo.current_exe)?;
+    println!("ci {}", env!("CARGO_PKG_VERSION"));
+    println!("repository: {}", ctx.repo.root.display());
+    println!("current executable: {}", ctx.repo.current_exe.display());
+    println!("current hash: {current_hash}");
+
+    let host_arch = Architecture::host();
+    let install = inspect_installation(&ctx.repo, &[host_arch]);
+    let Some(binary) = install.binaries.into_iter().next() else {
+        println!("status: missing");
+        return Ok(0);
+    };
+
+    match binary {
+        BinaryState::Missing(path) => {
+            println!("installed executable: {}", path.display());
+            println!("installed: missing");
+            println!("status: missing");
+        }
+        BinaryState::Symlink {
+            path,
+            target,
+            broken,
+        } => {
+            println!("installed executable: {}", path.display());
+            println!("installed symlink: {}", target.display());
+            if broken {
+                println!("installed: broken symlink");
+                println!("status: missing");
+            } else {
+                print_installed_hash_status(&path, &current_hash)?;
+            }
+        }
+        BinaryState::Copy { path } => {
+            println!("installed executable: {}", path.display());
+            println!("installed: copy");
+            print_installed_hash_status(&path, &current_hash)?;
+        }
+    }
+    Ok(0)
+}
+
+fn print_installed_hash_status(path: &Path, current_hash: &str) -> Result<()> {
+    let installed_hash = file_content_hash(path)?;
+    println!("installed hash: {installed_hash}");
+    if installed_hash == current_hash {
+        println!("status: same");
+    } else {
+        println!("status: update-needed");
+    }
+    Ok(())
+}
+
+fn file_content_hash(path: &Path) -> Result<String> {
+    let mut file = fs::File::open(path)?;
+    let mut hash = 0xcbf29ce484222325u64;
+    let mut buffer = [0u8; 8192];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        for byte in &buffer[..read] {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    Ok(format!("{hash:016x}"))
 }
 
 fn execute_run(ctx: &AppContext, request: RunRequest) -> Result<i32> {

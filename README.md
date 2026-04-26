@@ -38,6 +38,7 @@ Core commands:
 - `man`: generate `man1` pages.
 - `init`: create `.ci/build.yml`.
 - `self`: print information about the current `ci` binary.
+- `other`: compare the installed repository runner with the current `ci` binary.
 
 If the first command does not match a built-in command, `ci` treats it as a workflow name. For example, `ci build` is equivalent to `ci run build`.
 
@@ -643,9 +644,12 @@ That installs `dist/ci-linux-x64` to `.git/ci/run.x64` and `dist/ci-linux-arm64`
 
 ```sh
 ci update
+ci other
 ```
 
 For link mode, this refreshes the runner symlink. For copy mode, this copies the current binary again. `ci update --source 'dist/ci-linux-{arch}'` uses the same per-architecture source template as install. Managed hooks are refreshed as direct symlinks when one runner is installed, or selector scripts when multiple runners are installed.
+
+`ci other` prints the host-architecture runner installed under `.git/ci`, hashes it against the currently running `ci`, and reports `same`, `update-needed`, or `missing`.
 
 ## Status and explain
 

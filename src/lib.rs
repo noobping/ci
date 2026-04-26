@@ -80,5 +80,6 @@ fn run(cli: Cli, doctor_alias: bool, bootstrap_output: Output) -> Result<i32> {
         Commands::Completion(_) | Commands::Man(_) => unreachable!(),
         Commands::Init(args) => runner::cmd_init(&ctx, &args),
         Commands::SelfCmd(args) => runner::cmd_self(&ctx, &args),
+        Commands::Other(args) => runner::cmd_other(&ctx, &args),
     }
 }

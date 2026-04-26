@@ -280,6 +280,16 @@ ci update --source ./target/release/ci
 For link installs this refreshes links. For copy installs this copies the current or selected binary again.
 "#,
         ),
+        "ci-other" => Some(
+            r#"
+.SH EXAMPLES
+.EX
+ci other
+.EE
+.SH OUTPUT
+Prints the current ci binary, the host-architecture runner installed under .git/ci, both content hashes, and a status of same, update-needed, or missing.
+"#,
+        ),
         "ci-hook" => Some(
             r#"
 .SH EXAMPLES

@@ -510,6 +510,42 @@ steps:
 }
 
 #[test]
+fn other_reports_installed_runner_hash_status() {
+    let repo = TestRepo::new();
+    let host_arch = host_runner_suffix();
+
+    let mut missing = repo.ci();
+    missing.args(["other"]);
+    let missing = assert_success(output(missing));
+    let missing_stdout = stdout(&missing);
+    assert!(missing_stdout.contains("status: missing"));
+    assert!(missing_stdout.contains(&format!(".git/ci/run.{host_arch}")));
+
+    let mut install = repo.ci();
+    install.args(["install", "--mode", "copy", "--hooks", "pre-push"]);
+    assert_success(output(install));
+
+    let mut same = repo.ci();
+    same.args(["other"]);
+    let same = assert_success(output(same));
+    let same_stdout = stdout(&same);
+    assert!(same_stdout.contains("installed: copy"));
+    assert!(same_stdout.contains("current hash: "));
+    assert!(same_stdout.contains("installed hash: "));
+    assert!(same_stdout.contains("status: same"));
+
+    fs::write(
+        repo.path().join(format!(".git/ci/run.{host_arch}")),
+        "older runner",
+    )
+    .expect("overwrite installed runner");
+    let mut update_needed = repo.ci();
+    update_needed.args(["other"]);
+    let update_needed = assert_success(output(update_needed));
+    assert!(stdout(&update_needed).contains("status: update-needed"));
+}
+
+#[test]
 fn install_uses_configured_default_mode_when_mode_flag_is_omitted() {
     let repo = TestRepo::new();
     let host_arch = host_runner_suffix();
