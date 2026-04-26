@@ -41,6 +41,15 @@ Core commands:
 
 If the first command does not match a built-in command, `ci` treats it as a workflow name. For example, `ci build` is equivalent to `ci run build`.
 
+Arguments after the `build` workflow name are forwarded to the detected build step:
+
+```sh
+ci run build --no-default-features
+ci build --features sqlite
+```
+
+For native YAML build workflows, `ci` looks for a step named `build`, then for a recognizable build command such as `cargo build`, and appends the arguments to that step. The space-joined argument string is also available to scripts as `CI_WORKFLOW_ARGS`.
+
 Global output controls:
 
 ```sh

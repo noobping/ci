@@ -51,6 +51,10 @@ pub(crate) fn workflow_env(
         provider_name(&resolved.provider).to_string(),
     );
     env.insert("CI_HOOK_ARGS".to_string(), invocation.hook_args.join(" "));
+    env.insert(
+        "CI_WORKFLOW_ARGS".to_string(),
+        invocation.workflow_args.join(" "),
+    );
     if let Some(branch) = invocation.branch.as_ref() {
         env.insert("CI_BRANCH".to_string(), branch.clone());
         env.insert("GITHUB_REF".to_string(), format!("refs/heads/{branch}"));

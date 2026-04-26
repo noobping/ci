@@ -85,6 +85,7 @@ struct RunRequest {
     recursive_checkout: bool,
     lock: bool,
     hook_args: Vec<String>,
+    workflow_args: Vec<String>,
     branch: Option<String>,
 }
 
@@ -95,6 +96,7 @@ pub(crate) struct RunInvocation {
     pub(crate) container_runtime: ContainerRuntime,
     pub(crate) container_override: ContainerOverride,
     pub(crate) hook_args: Vec<String>,
+    pub(crate) workflow_args: Vec<String>,
     pub(crate) branch: Option<String>,
 }
 
@@ -106,6 +108,7 @@ impl RunRequest {
             container_runtime: self.container_runtime,
             container_override: self.container_override,
             hook_args: self.hook_args.clone(),
+            workflow_args: self.workflow_args.clone(),
             branch: self.branch.clone(),
         }
     }
@@ -165,6 +168,12 @@ pub fn cmd_list(ctx: &AppContext, args: &ListArgs) -> Result<i32> {
 }
 
 pub fn cmd_run(ctx: &AppContext, args: &RunArgs) -> Result<i32> {
+    if !args.args.is_empty() && (args.all || args.workflow.as_deref() != Some("build")) {
+        return Err(CiError::Usage(
+            "workflow arguments are only supported for `ci run build ...`".to_string(),
+        ));
+    }
+
     let keep_going = if args.keep_going {
         true
     } else if args.fail_fast {
@@ -192,6 +201,7 @@ pub fn cmd_run(ctx: &AppContext, args: &RunArgs) -> Result<i32> {
         recursive_checkout: !args.no_recursive_checkout && ctx.config.defaults.recursive_checkout,
         lock: args.lock,
         hook_args: Vec::new(),
+        workflow_args: args.args.clone(),
         branch: ctx.repo.branch.clone(),
     };
     execute_run(ctx, request)
@@ -217,6 +227,7 @@ pub fn cmd_hook(ctx: &AppContext, args: &HookArgs) -> Result<i32> {
         recursive_checkout: ctx.config.defaults.recursive_checkout,
         lock: true,
         hook_args: args.hook_args.clone(),
+        workflow_args: Vec::new(),
         branch: branch.clone(),
     };
     execute_run(ctx, request)
@@ -379,16 +390,21 @@ fn run_one_workflow(
     run_id: &str,
     artifacts: &mut ArtifactSession,
 ) -> Result<i32> {
-    let base_env = workflow_env(ctx, invocation, &item.resolved, run_id);
+    let mut invocation = invocation.clone();
+    if item.resolved.name != "build" {
+        invocation.workflow_args.clear();
+    }
+
+    let base_env = workflow_env(ctx, &invocation, &item.resolved, run_id);
     let status = match &item.workflow.source {
         WorkflowSource::Executable(_) => {
-            run_executable(ctx, invocation, &item.resolved, &base_env)?
+            run_executable(ctx, &invocation, &item.resolved, &base_env)?
         }
         WorkflowSource::NativeYaml(native) => {
             if native_container_enabled(&item.resolved, invocation.container_override) {
                 run_native_yaml_containerized(
                     ctx,
-                    invocation,
+                    &invocation,
                     &item.resolved,
                     &native.steps,
                     &base_env,
@@ -397,7 +413,7 @@ fn run_one_workflow(
             } else {
                 run_native_yaml(
                     ctx,
-                    invocation,
+                    &invocation,
                     &item.resolved,
                     &native.steps,
                     &base_env,
@@ -413,11 +429,11 @@ fn run_one_workflow(
                     item.workflow.path.display()
                 )));
             }
-            run_container_workflow(ctx, invocation, &item.resolved, &base_env)?
+            run_container_workflow(ctx, &invocation, &item.resolved, &base_env)?
         }
         WorkflowSource::Actions(actions) => run_actions_workflow(
             ctx,
-            invocation,
+            &invocation,
             &item.resolved,
             actions,
             &base_env,
@@ -464,6 +480,7 @@ fn run_executable(
             resolved.execution.workspace.as_deref(),
         ))
         .args(&invocation.hook_args)
+        .args(&invocation.workflow_args)
         .envs(env)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())

@@ -52,7 +52,7 @@ pub(crate) fn run_native_yaml_containerized(
 
 pub(crate) fn run_native_yaml(
     ctx: &AppContext,
-    _invocation: &RunInvocation,
+    invocation: &RunInvocation,
     resolved: &ResolvedWorkflow,
     steps: &[NativeStep],
     base_env: &BTreeMap<String, String>,
@@ -67,9 +67,13 @@ pub(crate) fn run_native_yaml(
     } else {
         Vec::new()
     };
+    let forwarded_step = detect_build_arg_step(resolved, steps, &invocation.workflow_args)?;
     let empty_matrix = BTreeMap::new();
     let empty_inputs = BTreeMap::new();
-    for step in steps {
+    for (index, step) in steps.iter().enumerate() {
+        let forwarded_args = forwarded_step
+            .filter(|target| *target == index)
+            .map(|_| invocation.workflow_args.as_slice());
         let step_name = step
             .name
             .as_deref()
@@ -139,8 +143,8 @@ pub(crate) fn run_native_yaml(
                 ctx,
                 resolved,
                 step,
-                step_name,
                 &expr,
+                forwarded_args,
                 artifacts,
                 &mut cache_state,
             )?
@@ -150,7 +154,11 @@ pub(crate) fn run_native_yaml(
                 .as_deref()
                 .or(resolved.execution.shell.as_deref())
                 .unwrap_or(&ctx.config.defaults.shell);
-            let script = interpolate_expressions(run, &expr);
+            let script = if let Some(args) = forwarded_args {
+                append_args_to_build_script(&interpolate_expressions(run, &expr), args)
+            } else {
+                interpolate_expressions(run, &expr)
+            };
             let workdir = resolve_workdir(
                 &ctx.repo.root,
                 step.working_directory
@@ -198,8 +206,8 @@ fn run_native_uses_step(
     ctx: &AppContext,
     resolved: &ResolvedWorkflow,
     step: &NativeStep,
-    default_name: &str,
     expr: &ExpressionContext<'_>,
+    forwarded_args: Option<&[String]>,
     artifacts: &mut ArtifactSession,
     cache_state: &mut CacheState,
 ) -> Result<i32> {
@@ -209,11 +217,21 @@ fn run_native_uses_step(
             resolved.path.display()
         ))
     })?;
+    let mut with = step.with.clone();
+    if let Some(args) = forwarded_args {
+        with.entry("args".to_string())
+            .or_insert_with(|| args.join(" "));
+    }
+
     let invocation = BuiltinStepInvocation {
         workflow_name: &resolved.name,
-        default_name,
+        default_name: step
+            .name
+            .as_deref()
+            .or(step.uses.as_deref())
+            .unwrap_or("run"),
         uses,
-        with: &step.with,
+        with: &with,
         extra: Some(&step.extra),
         inline_run: step.run.clone(),
         shell: Some(
@@ -242,6 +260,153 @@ fn run_native_uses_step(
             resolved.path.display()
         ))
     })
+}
+
+fn detect_build_arg_step(
+    resolved: &ResolvedWorkflow,
+    steps: &[NativeStep],
+    args: &[String],
+) -> Result<Option<usize>> {
+    if args.is_empty() {
+        return Ok(None);
+    }
+
+    if resolved.name != "build" {
+        return Err(CiError::Usage(format!(
+            "workflow arguments can only be forwarded to the `build` workflow; `{}` is not supported",
+            resolved.name
+        )));
+    }
+
+    let named_build_steps = steps
+        .iter()
+        .enumerate()
+        .filter(|(_, step)| step.name.as_deref().map(is_build_label).unwrap_or(false))
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    if named_build_steps.len() == 1 {
+        return Ok(named_build_steps.first().copied());
+    }
+    if named_build_steps.len() > 1 {
+        return Err(CiError::Usage(format!(
+            "{} has multiple steps named `build`; rename the step that should receive workflow arguments",
+            resolved.path.display()
+        )));
+    }
+
+    let build_command_steps = steps
+        .iter()
+        .enumerate()
+        .filter(|(_, step)| {
+            step.run
+                .as_deref()
+                .map(script_contains_build_command)
+                .unwrap_or(false)
+        })
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    if build_command_steps.len() == 1 {
+        return Ok(build_command_steps.first().copied());
+    }
+    if build_command_steps.len() > 1 {
+        return Err(CiError::Usage(format!(
+            "{} has multiple possible build steps; name the intended step `build`",
+            resolved.path.display()
+        )));
+    }
+
+    if steps.len() == 1 {
+        return Ok(Some(0));
+    }
+
+    Err(CiError::Usage(format!(
+        "{} could not detect which step should receive workflow arguments; name the build step `build`",
+        resolved.path.display()
+    )))
+}
+
+fn is_build_label(value: &str) -> bool {
+    let value = value.trim().to_ascii_lowercase();
+    value == "build" || value.starts_with("build ")
+}
+
+fn script_contains_build_command(script: &str) -> bool {
+    script
+        .lines()
+        .any(|line| is_build_command_line(line.trim()))
+}
+
+fn is_build_command_line(line: &str) -> bool {
+    if line.is_empty() || line.starts_with('#') {
+        return false;
+    }
+
+    let line = line.to_ascii_lowercase();
+    [
+        "cargo build",
+        "npm run build",
+        "npm build",
+        "yarn build",
+        "pnpm build",
+        "go build",
+        "mvn package",
+        "mvn install",
+        "gradle build",
+        "./gradlew build",
+        "dotnet build",
+        "python -m build",
+        "python3 -m build",
+    ]
+    .iter()
+    .any(|needle| line.contains(needle))
+}
+
+fn append_args_to_build_script(script: &str, args: &[String]) -> String {
+    let rendered_args = shell_quote_args(args);
+    let trailing_newline = script.ends_with('\n');
+    let mut lines = script.lines().map(ToString::to_string).collect::<Vec<_>>();
+    if lines.is_empty() {
+        return rendered_args;
+    }
+
+    let target = lines
+        .iter()
+        .position(|line| is_build_command_line(line.trim()))
+        .or_else(|| lines.iter().rposition(|line| !line.trim().is_empty()))
+        .unwrap_or(0);
+    lines[target].push(' ');
+    lines[target].push_str(&rendered_args);
+
+    let mut result = lines.join("\n");
+    if trailing_newline {
+        result.push('\n');
+    }
+    result
+}
+
+fn shell_quote_args(args: &[String]) -> String {
+    args.iter()
+        .map(|arg| shell_quote(arg))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn shell_quote(arg: &str) -> String {
+    if arg.is_empty() {
+        return "''".to_string();
+    }
+
+    if arg.chars().all(|ch| {
+        ch.is_ascii_alphanumeric()
+            || matches!(
+                ch,
+                '@' | '%' | '_' | '+' | '=' | ':' | ',' | '.' | '/' | '-'
+            )
+    }) {
+        return arg.to_string();
+    }
+
+    format!("'{}'", arg.replace('\'', "'\\''"))
 }
 
 fn native_step_inputs(step: &NativeStep, expr: &ExpressionContext<'_>) -> BTreeMap<String, String> {

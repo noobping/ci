@@ -186,6 +186,8 @@ ExecStart=%h/.local/bin/ci --silent run build
 ci run
 ci run build
 ci build
+ci run build --no-default-features
+ci build --features sqlite
 ci run --all
 ci run --event pre-push build
 ci run --arch x64,arm64 build
@@ -195,6 +197,8 @@ ci run --no-container build
 .EE
 .SH NOTES
 Unknown top-level commands are treated as workflow names, so ci build is equivalent to ci run build.
+Arguments after the build workflow name are forwarded to the detected build step. Native YAML build workflows first look for a step named build, then for a recognizable build command such as cargo build, and append the arguments to that step.
+The space-joined forwarded argument string is available to scripts as CI_WORKFLOW_ARGS.
 Use --container to force native workflows into containers, and --no-container to run them on the host.
 Native containers use stack-aware dependency cache mounts under .git/ci/container-cache.
 "#,

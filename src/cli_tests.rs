@@ -74,6 +74,44 @@ fn unknown_command_rewrite_keeps_global_options_before_workflow() {
 }
 
 #[test]
+fn run_accepts_build_args_after_workflow() {
+    let cli = Cli::try_parse_from(rewrite([
+        "ci",
+        "run",
+        "build",
+        "--no-default-features",
+        "--features",
+        "sqlite",
+    ]))
+    .expect("parse");
+
+    match cli.command {
+        Commands::Run(args) => {
+            assert_eq!(args.workflow.as_deref(), Some("build"));
+            assert_eq!(
+                args.args,
+                vec!["--no-default-features", "--features", "sqlite"]
+            );
+        }
+        _ => panic!("expected run command"),
+    }
+}
+
+#[test]
+fn rewritten_workflow_accepts_build_args_after_workflow() {
+    let cli =
+        Cli::try_parse_from(rewrite(["ci", "build", "--no-default-features"])).expect("parse");
+
+    match cli.command {
+        Commands::Run(args) => {
+            assert_eq!(args.workflow.as_deref(), Some("build"));
+            assert_eq!(args.args, vec!["--no-default-features"]);
+        }
+        _ => panic!("expected run command"),
+    }
+}
+
+#[test]
 fn known_commands_and_aliases_are_not_rewritten_as_workflows() {
     let list = Cli::try_parse_from(rewrite(["ci", "list"])).expect("parse");
     assert!(matches!(list.command, Commands::List(_)));

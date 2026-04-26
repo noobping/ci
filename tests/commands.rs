@@ -1,9 +1,11 @@
 mod common;
 
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
 use common::assertions::{assert_failure, assert_success, ci_command, output, stderr, stdout};
+use common::fake_podman::path_with_fake_bin;
 use common::repo::TestRepo;
 use tempfile::TempDir;
 
@@ -107,6 +109,83 @@ steps:
 
     assert_eq!(repo.read("quiet.txt"), "quiet");
     assert!(!stdout(&output).contains("INFO"));
+}
+
+#[test]
+fn run_build_forwards_args_to_detected_build_step() {
+    let repo = TestRepo::new();
+    let fake = TempDir::new().expect("fake cargo dir");
+    let bin_dir = fake.path().join("bin");
+    fs::create_dir_all(&bin_dir).expect("create fake bin dir");
+    let cargo = bin_dir.join("cargo");
+    fs::write(
+        &cargo,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CARGO_ARGS_OUT\"\n",
+    )
+    .expect("write fake cargo");
+    let mut permissions = fs::metadata(&cargo).expect("cargo metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&cargo, permissions).expect("chmod fake cargo");
+    let args_out = fake.path().join("cargo.args");
+
+    repo.write(
+        ".ci/build.yml",
+        r#"
+on: [manual]
+needs: check
+steps:
+  - name: test
+    run: printf test > test.txt
+  - name: Build
+    run: cargo build --release
+"#,
+    );
+    repo.write(
+        ".ci/check.yml",
+        r#"
+on: [manual]
+steps:
+  - name: check
+    run: printf '%s' "$CI_WORKFLOW_ARGS" > check.args
+"#,
+    );
+
+    let mut command = repo.ci();
+    command
+        .env("PATH", path_with_fake_bin(&bin_dir))
+        .env("CARGO_ARGS_OUT", &args_out)
+        .args([
+            "run",
+            "build",
+            "--no-default-features",
+            "--features",
+            "sqlite",
+        ]);
+    assert_success(output(command));
+
+    assert_eq!(
+        fs::read_to_string(args_out).expect("read cargo args"),
+        "build\n--release\n--no-default-features\n--features\nsqlite\n"
+    );
+    assert_eq!(repo.read("test.txt"), "test");
+    assert_eq!(repo.read("check.args"), "");
+}
+
+#[test]
+fn run_rejects_forwarded_args_for_non_build_workflow() {
+    let repo = TestRepo::new();
+    repo.write(
+        ".ci/check.yml",
+        r#"
+on: [manual]
+steps:
+  - run: true
+"#,
+    );
+
+    let mut command = repo.ci();
+    command.args(["run", "check", "--some-arg"]);
+    assert_failure(output(command), 2);
 }
 
 #[test]

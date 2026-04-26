@@ -143,6 +143,14 @@ pub struct RunArgs {
     #[arg(value_name = "WORKFLOW")]
     pub workflow: Option<String>,
 
+    #[arg(
+        value_name = "ARG",
+        allow_hyphen_values = true,
+        trailing_var_arg = true,
+        help = "Arguments forwarded to the detected build step"
+    )]
+    pub args: Vec<String>,
+
     #[arg(long = "event", default_value = "manual")]
     pub event: String,
 
