@@ -414,6 +414,27 @@ Use `container.readonly: true` to make read-only the workflow default. Step-leve
 
 Native containers use stack-aware cache mounts under `.git/ci/container-cache` for common dependency caches such as Cargo, npm, Go modules, pip, Maven, Gradle, and NuGet. Build output paths such as `target/` stay in the repository mount so later `export` steps can see them.
 
+Run a single native `run:` step in its own image:
+
+```yaml
+steps:
+  - name: Node lint
+    container: docker.io/library/node:22-bookworm-slim
+    run: npm test
+
+  - name: Tool check
+    container:
+      file: .ci/tools.Containerfile
+      image: localhost/my-project-tools
+      env:
+        TOOL_MODE: strict
+      volumes:
+        - /tmp:/tmp/ci-tools
+    run: tool check
+```
+
+`container: false` still keeps a step on the host. `ci run --no-container` disables workflow and step containers for native YAML workflows.
+
 ## Containerfile Examples
 
 Use a custom image for native workflow steps:

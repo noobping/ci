@@ -202,6 +202,7 @@ fn generated_build_workflow(
                 run: Some(stack.build_command.clone()),
                 uses: None,
                 container: None,
+                container_config: None,
                 readonly: None,
                 with: Default::default(),
                 extra: Default::default(),

@@ -9,7 +9,7 @@ use crate::config::{
     WorkflowOverride,
 };
 use crate::error::{CiError, Result};
-use crate::workflow::NativeStep;
+use crate::workflow::{NativeStep, StepContainerConfig};
 
 #[derive(Clone, Debug, Deserialize, Default)]
 pub(crate) struct NativeWorkflowFile {
@@ -70,7 +70,7 @@ pub(crate) struct RawNativeStep {
     #[serde(rename = "use")]
     use_value: Option<String>,
     uses: Option<String>,
-    container: Option<bool>,
+    container: Option<RawStepContainer>,
     #[serde(alias = "read-only", alias = "read_only")]
     readonly: Option<bool>,
     shell: Option<String>,
@@ -117,12 +117,36 @@ impl RawNativeStep {
             )));
         }
         let uses = use_value.or(uses);
+        let (container, container_config) = match container {
+            Some(RawStepContainer::Bool(value)) => (Some(value), None),
+            Some(RawStepContainer::Image(image)) => (
+                Some(true),
+                Some(StepContainerConfig {
+                    image: Some(image),
+                    ..StepContainerConfig::default()
+                }),
+            ),
+            Some(RawStepContainer::Config(value)) => (
+                Some(true),
+                Some(StepContainerConfig {
+                    file: value.file,
+                    image: value.image,
+                    platform: value.platform,
+                    workdir: value.workdir,
+                    readonly: value.readonly,
+                    env: value.env,
+                    volumes: value.volumes,
+                }),
+            ),
+            None => (None, None),
+        };
 
         NativeStep {
             name,
             run,
             uses,
             container,
+            container_config,
             readonly,
             with: stringify_yaml_map(with),
             extra: stringify_yaml_map(extra),
@@ -135,6 +159,38 @@ impl RawNativeStep {
         }
         .validate(workflow_path, index)
     }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(untagged)]
+enum RawStepContainer {
+    Bool(bool),
+    Config(RawStepContainerConfig),
+    Image(String),
+}
+
+#[derive(Clone, Debug, Deserialize, Default)]
+struct RawStepContainerConfig {
+    #[serde(
+        rename = "file",
+        alias = "containerfile",
+        alias = "container-file",
+        alias = "container_file",
+        alias = "dockerfile",
+        alias = "docker-file",
+        alias = "docker_file"
+    )]
+    file: Option<String>,
+    image: Option<String>,
+    platform: Option<String>,
+    #[serde(alias = "working-directory", alias = "working_directory")]
+    workdir: Option<String>,
+    #[serde(alias = "read-only", alias = "read_only")]
+    readonly: Option<bool>,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
+    #[serde(default)]
+    volumes: Vec<String>,
 }
 
 impl NativeWorkflowFile {

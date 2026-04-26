@@ -163,7 +163,7 @@ fn native_step_schema() -> serde_json::Value {
             "run": { "type": "string" },
             "use": { "type": "string" },
             "uses": { "type": "string" },
-            "container": { "type": "boolean" },
+            "container": step_container_schema(),
             "readonly": { "type": "boolean" },
             "read-only": { "type": "boolean" },
             "read_only": { "type": "boolean" },
@@ -175,6 +175,38 @@ fn native_step_schema() -> serde_json::Value {
             "continue-on-error": { "type": "boolean" },
             "timeout-minutes": { "type": "integer", "minimum": 1 }
         }
+    })
+}
+
+fn step_container_schema() -> serde_json::Value {
+    json!({
+        "oneOf": [
+            { "type": "boolean" },
+            { "type": "string" },
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "image": { "type": "string" },
+                    "file": { "type": "string" },
+                    "containerfile": { "type": "string" },
+                    "container-file": { "type": "string" },
+                    "container_file": { "type": "string" },
+                    "dockerfile": { "type": "string" },
+                    "docker-file": { "type": "string" },
+                    "docker_file": { "type": "string" },
+                    "platform": { "type": "string" },
+                    "workdir": { "type": "string" },
+                    "working-directory": { "type": "string" },
+                    "working_directory": { "type": "string" },
+                    "readonly": { "type": "boolean" },
+                    "read-only": { "type": "boolean" },
+                    "read_only": { "type": "boolean" },
+                    "env": string_map_schema(),
+                    "volumes": string_array_schema()
+                }
+            }
+        ]
     })
 }
 

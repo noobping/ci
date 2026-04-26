@@ -1,16 +1,18 @@
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::artifacts::ArtifactSession;
 use crate::conditions::{
     evaluate_condition, evaluate_condition_with_probe, interpolate_expressions, ExpressionContext,
 };
 use crate::containers::{
-    container_platform, ContainerBackend, ContainerCommandExistsSpec, ContainerShellSpec,
+    container_platform, validate_container_image_ref, ContainerBackend, ContainerCommandExistsSpec,
+    ContainerShellSpec,
 };
 use crate::error::{CiError, Result};
-use crate::runner::{AppContext, RunInvocation};
-use crate::workflow::{NativeStep, ResolvedWorkflow};
+use crate::git::sanitize_component;
+use crate::runner::{AppContext, ContainerOverride, RunInvocation};
+use crate::workflow::{NativeStep, ResolvedWorkflow, StepContainerConfig};
 
 use super::builtins::{interpolate_map, run_builtin_step, BuiltinStepInvocation, BuiltinStepState};
 use super::cache::{save_pending_caches, CacheState};
@@ -18,6 +20,18 @@ use super::env::{merged_env, resolve_workdir, run_shell};
 use super::native_container::{
     native_container_cache_mounts, prepare_native_container_image, NativeContainerExecution,
 };
+
+struct StepContainerExecution<'a> {
+    backend: &'a ContainerBackend,
+    image: String,
+    platform: String,
+    env: BTreeMap<String, String>,
+    volumes: Vec<String>,
+    workdir: Option<String>,
+    readonly: Option<bool>,
+    cache_mounts: Vec<(PathBuf, String)>,
+    build_status: i32,
+}
 
 pub(crate) fn run_native_yaml_containerized(
     ctx: &AppContext,
@@ -67,6 +81,12 @@ pub(crate) fn run_native_yaml(
     } else {
         Vec::new()
     };
+    let step_container_backend =
+        if needs_step_container_backend(invocation, steps, container.is_some()) {
+            Some(ContainerBackend::detect(invocation.container_runtime)?)
+        } else {
+            None
+        };
     let forwarded_step = detect_build_arg_step(resolved, steps, &invocation.workflow_args)?;
     let empty_matrix = BTreeMap::new();
     let empty_inputs = BTreeMap::new();
@@ -80,10 +100,20 @@ pub(crate) fn run_native_yaml(
             .or(step.uses.as_deref())
             .unwrap_or("run");
 
-        let step_container = container.filter(|_| step.container.unwrap_or(true));
+        let step_container = prepare_step_container(
+            ctx,
+            invocation,
+            resolved,
+            step,
+            step_name,
+            index,
+            container,
+            step_container_backend.as_ref(),
+            &native_cache_mounts,
+        )?;
         let mut condition_env = merged_env(base_env, &resolved.env, &step.env);
-        if step_container.is_some() {
-            condition_env = merged_env(&condition_env, &resolved.container.env, &BTreeMap::new());
+        if let Some(container) = &step_container {
+            condition_env = merged_env(&condition_env, &container.env, &BTreeMap::new());
         }
         let mut condition_inputs = BTreeMap::new();
         let preliminary_expr = ExpressionContext {
@@ -110,7 +140,7 @@ pub(crate) fn run_native_yaml(
             },
             ..preliminary_expr
         };
-        let should_run = if let Some(container) = step_container {
+        let should_run = if let Some(container) = &step_container {
             let command_probe = |name: &str| {
                 container.backend.command_exists(
                     &ContainerCommandExistsSpec {
@@ -167,23 +197,24 @@ pub(crate) fn run_native_yaml(
                     .or(resolved.execution.workspace.as_deref()),
             );
             if let Some(container) = step_container {
-                container.backend.run_shell(&ContainerShellSpec {
-                    image: &container.image,
-                    repo_root: &ctx.repo.root,
-                    shell,
-                    script: &script,
-                    env: &condition_env,
-                    workdir: &workdir,
-                    platform: Some(&container.platform),
-                    options: None,
-                    extra_volumes: &resolved.container.volumes,
-                    cache_mounts: &native_cache_mounts,
-                    container_workdir: resolved.container.workdir.as_deref(),
-                    readonly: step
-                        .readonly
-                        .or(resolved.container.readonly)
-                        .unwrap_or(false),
-                })?
+                if container.build_status != 0 {
+                    container.build_status
+                } else {
+                    container.backend.run_shell(&ContainerShellSpec {
+                        image: &container.image,
+                        repo_root: &ctx.repo.root,
+                        shell,
+                        script: &script,
+                        env: &condition_env,
+                        workdir: &workdir,
+                        platform: Some(&container.platform),
+                        options: None,
+                        extra_volumes: &container.volumes,
+                        cache_mounts: &container.cache_mounts,
+                        container_workdir: container.workdir.as_deref(),
+                        readonly: step.readonly.or(container.readonly).unwrap_or(false),
+                    })?
+                }
             } else {
                 run_shell(shell, &script, &workdir, &condition_env)?
             }
@@ -200,6 +231,195 @@ pub(crate) fn run_native_yaml(
     }
     save_pending_caches(ctx, &cache_state)?;
     Ok(workflow_failure)
+}
+
+fn needs_step_container_backend(
+    invocation: &RunInvocation,
+    steps: &[NativeStep],
+    has_workflow_container: bool,
+) -> bool {
+    invocation.container_override != ContainerOverride::Disable
+        && !has_workflow_container
+        && steps.iter().any(|step| {
+            step.uses.is_none()
+                && step.run.is_some()
+                && step.container.unwrap_or(true)
+                && step.container_config.is_some()
+        })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_step_container<'a>(
+    ctx: &AppContext,
+    invocation: &RunInvocation,
+    resolved: &ResolvedWorkflow,
+    step: &NativeStep,
+    step_name: &str,
+    step_index: usize,
+    workflow_container: Option<&NativeContainerExecution<'a>>,
+    step_backend: Option<&'a ContainerBackend>,
+    native_cache_mounts: &[(PathBuf, String)],
+) -> Result<Option<StepContainerExecution<'a>>> {
+    if invocation.container_override == ContainerOverride::Disable || step.container == Some(false)
+    {
+        return Ok(None);
+    }
+
+    if let Some(config) = &step.container_config {
+        if step.uses.is_some() || step.run.is_none() {
+            return Ok(workflow_container.map(|container| {
+                workflow_step_container(container, resolved, native_cache_mounts)
+            }));
+        }
+
+        return prepare_configured_step_container(
+            ctx,
+            invocation,
+            resolved,
+            step_name,
+            step_index,
+            workflow_container,
+            step_backend,
+            native_cache_mounts,
+            config,
+        )
+        .map(Some);
+    }
+
+    Ok(workflow_container
+        .filter(|_| step.container.unwrap_or(true))
+        .map(|container| workflow_step_container(container, resolved, native_cache_mounts)))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_configured_step_container<'a>(
+    ctx: &AppContext,
+    invocation: &RunInvocation,
+    resolved: &ResolvedWorkflow,
+    step_name: &str,
+    step_index: usize,
+    workflow_container: Option<&NativeContainerExecution<'a>>,
+    step_backend: Option<&'a ContainerBackend>,
+    native_cache_mounts: &[(PathBuf, String)],
+    config: &StepContainerConfig,
+) -> Result<StepContainerExecution<'a>> {
+    let backend = workflow_container
+        .map(|container| container.backend)
+        .or(step_backend)
+        .ok_or_else(|| {
+            CiError::Message("container runtime was not initialized for step container".to_string())
+        })?;
+    let platform = config
+        .platform
+        .clone()
+        .or_else(|| workflow_container.map(|container| container.platform.clone()))
+        .unwrap_or_else(|| container_platform(resolved, &invocation.arch));
+    let mut env = resolved.container.env.clone();
+    env.extend(config.env.clone());
+    let mut volumes = resolved.container.volumes.clone();
+    volumes.extend(config.volumes.clone());
+    let workdir = config
+        .workdir
+        .clone()
+        .or_else(|| resolved.container.workdir.clone());
+    let readonly = config.readonly.or(resolved.container.readonly);
+
+    let build_file = config
+        .file
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| step_container_file(&ctx.repo.root, value));
+    let uses_workflow_image =
+        build_file.is_none() && config.image.is_none() && workflow_container.is_some();
+    let image = if build_file.is_some() {
+        config.image.clone().unwrap_or_else(|| {
+            generated_step_container_image_name(&resolved.name, step_name, step_index, &platform)
+        })
+    } else {
+        config
+            .image
+            .clone()
+            .or_else(|| workflow_container.map(|container| container.image.clone()))
+            .ok_or_else(|| {
+                CiError::Usage(format!(
+                    "{} step `{step_name}` container must set `image` or `file`",
+                    resolved.path.display()
+                ))
+            })?
+    };
+    validate_container_image_ref(&image)?;
+
+    let build_status = if let Some(file) = build_file {
+        if !file.exists() {
+            return Err(CiError::NotFound(file.display().to_string()));
+        }
+        ctx.output.verbose(format!(
+            "building step `{step_name}` container from {}",
+            file.display()
+        ));
+        backend.build(&file, &ctx.repo.root, &image, Some(&platform))?
+    } else {
+        0
+    };
+
+    Ok(StepContainerExecution {
+        backend,
+        image,
+        platform,
+        env,
+        volumes,
+        workdir,
+        readonly,
+        cache_mounts: if uses_workflow_image {
+            native_cache_mounts.to_vec()
+        } else {
+            Vec::new()
+        },
+        build_status,
+    })
+}
+
+fn workflow_step_container<'a>(
+    container: &NativeContainerExecution<'a>,
+    resolved: &ResolvedWorkflow,
+    native_cache_mounts: &[(PathBuf, String)],
+) -> StepContainerExecution<'a> {
+    StepContainerExecution {
+        backend: container.backend,
+        image: container.image.clone(),
+        platform: container.platform.clone(),
+        env: resolved.container.env.clone(),
+        volumes: resolved.container.volumes.clone(),
+        workdir: resolved.container.workdir.clone(),
+        readonly: resolved.container.readonly,
+        cache_mounts: native_cache_mounts.to_vec(),
+        build_status: 0,
+    }
+}
+
+fn step_container_file(repo_root: &Path, value: &str) -> PathBuf {
+    let path = Path::new(value);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        repo_root.join(path)
+    }
+}
+
+fn generated_step_container_image_name(
+    workflow_name: &str,
+    step_name: &str,
+    step_index: usize,
+    platform: &str,
+) -> String {
+    format!(
+        "localhost/ci-{}-step-{}-{}-{}:latest",
+        sanitize_component(workflow_name),
+        step_index + 1,
+        sanitize_component(step_name),
+        sanitize_component(platform)
+    )
 }
 
 fn run_native_uses_step(

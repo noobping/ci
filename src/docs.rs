@@ -152,6 +152,23 @@ steps:
     to: ~/.local/bin/ci.${{ env.CI_ARCH }}
     replace: true
 .EE
+.SH STEP CONTAINERS
+.EX
+steps:
+  - name: Node lint
+    container: docker.io/library/node:22-bookworm-slim
+    run: npm test
+  - name: Tool check
+    container:
+      file: .ci/tools.Containerfile
+      image: localhost/my-project-tools
+      env:
+        TOOL_MODE: strict
+      volumes:
+        - /tmp:/tmp/ci-tools
+    run: tool check
+.EE
+Set container: false on a step to run it on the host. ci run --no-container disables workflow and step containers for native YAML workflows.
 .SH SETTINGS EXAMPLE
 .EX
 quiet: true
@@ -208,6 +225,7 @@ Known ci options keep their ci meaning before --. Put build-command flags after 
 The space-joined forwarded argument string is available to scripts as CI_WORKFLOW_ARGS.
 Use --container to force native workflows into containers, and --no-container to run them on the host.
 Native containers use stack-aware dependency cache mounts under .git/ci/container-cache.
+A native run step can set container to an image string or to a map with image, file, platform, env, volumes, workdir, and readonly.
 "#,
         ),
         "ci-list" => Some(

@@ -105,6 +105,75 @@ steps:
 }
 
 #[test]
+fn native_step_accepts_container_image_shorthand() {
+    let file: NativeWorkflowFile = serde_yaml::from_str(
+        r#"
+steps:
+  - name: Node lint
+    container: docker.io/library/node:22-bookworm-slim
+    run: npm test
+"#,
+    )
+    .expect("parse workflow");
+    let step = file
+        .steps
+        .into_iter()
+        .next()
+        .expect("step")
+        .into_step(Path::new(".ci/build.yml"), 0)
+        .expect("valid step");
+    let container = step.container_config.expect("step container config");
+
+    assert_eq!(step.container, Some(true));
+    assert_eq!(
+        container.image.as_deref(),
+        Some("docker.io/library/node:22-bookworm-slim")
+    );
+}
+
+#[test]
+fn native_step_accepts_container_file_config() {
+    let file: NativeWorkflowFile = serde_yaml::from_str(
+        r#"
+steps:
+  - name: Tool check
+    container:
+      container-file: .ci/tools.Containerfile
+      image: localhost/project-tools
+      platform: linux/arm64
+      working-directory: /work/tooling
+      read-only: true
+      env:
+        TOOL_MODE: strict
+      volumes:
+        - /tmp:/tmp/ci-tools
+    run: tool check
+"#,
+    )
+    .expect("parse workflow");
+    let step = file
+        .steps
+        .into_iter()
+        .next()
+        .expect("step")
+        .into_step(Path::new(".ci/build.yml"), 0)
+        .expect("valid step");
+    let container = step.container_config.expect("step container config");
+
+    assert_eq!(step.container, Some(true));
+    assert_eq!(container.file.as_deref(), Some(".ci/tools.Containerfile"));
+    assert_eq!(container.image.as_deref(), Some("localhost/project-tools"));
+    assert_eq!(container.platform.as_deref(), Some("linux/arm64"));
+    assert_eq!(container.workdir.as_deref(), Some("/work/tooling"));
+    assert_eq!(container.readonly, Some(true));
+    assert_eq!(
+        container.env.get("TOOL_MODE").map(String::as_str),
+        Some("strict")
+    );
+    assert_eq!(container.volumes, vec!["/tmp:/tmp/ci-tools"]);
+}
+
+#[test]
 fn native_workflow_parses_container_arch_aliases() {
     let file: NativeWorkflowFile = serde_yaml::from_str(
         r#"

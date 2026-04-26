@@ -109,6 +109,7 @@ pub struct NativeStep {
     pub run: Option<String>,
     pub uses: Option<String>,
     pub container: Option<bool>,
+    pub container_config: Option<StepContainerConfig>,
     pub readonly: Option<bool>,
     pub with: BTreeMap<String, String>,
     pub extra: BTreeMap<String, String>,
@@ -141,6 +142,17 @@ impl NativeStep {
             ))),
         }
     }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct StepContainerConfig {
+    pub file: Option<String>,
+    pub image: Option<String>,
+    pub platform: Option<String>,
+    pub workdir: Option<String>,
+    pub readonly: Option<bool>,
+    pub env: BTreeMap<String, String>,
+    pub volumes: Vec<String>,
 }
 
 #[derive(Clone, Debug)]

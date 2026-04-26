@@ -160,6 +160,106 @@ steps:
 }
 
 #[test]
+fn native_step_can_use_own_container_image_without_workflow_container() {
+    let repo = TestRepo::new();
+    let fake = TempDir::new().expect("fake podman dir");
+    let fake_bin = make_fake_podman(fake.path());
+    repo.write(
+        ".ci/build.yml",
+        r#"
+on: [manual]
+steps:
+  - name: host step
+    run: printf host > host.txt
+  - name: step image
+    container:
+      image: localhost/step-image
+      env:
+        STEP_ENV: image
+      volumes:
+        - /tmp:/tmp/step-extra
+    run: printf "$STEP_ENV" > step.txt
+"#,
+    );
+
+    let mut command = repo.ci();
+    command.env("PATH", path_with_fake_bin(&fake_bin)).args([
+        "run",
+        "--container-runtime",
+        "podman",
+        "build",
+    ]);
+    assert_success(output(command));
+
+    assert_eq!(repo.read("host.txt"), "host");
+    assert_eq!(repo.read("step.txt"), "image");
+    let log = std::fs::read_to_string(fake.path().join("podman.log")).expect("read podman log");
+    assert!(log.contains("localhost/step-image"));
+    assert!(log.contains("-e STEP_ENV=image"));
+    assert!(log.contains("/tmp:/tmp/step-extra"));
+}
+
+#[test]
+fn no_container_override_runs_step_container_on_host() {
+    let repo = TestRepo::new();
+    let fake = TempDir::new().expect("fake podman dir");
+    let fake_bin = make_fake_podman(fake.path());
+    repo.write(
+        ".ci/build.yml",
+        r#"
+on: [manual]
+steps:
+  - name: step image
+    container: localhost/step-image
+    run: printf host > host-only.txt
+"#,
+    );
+
+    let mut command = repo.ci();
+    command
+        .env("PATH", path_with_fake_bin(&fake_bin))
+        .args(["run", "--no-container", "build"]);
+    assert_success(output(command));
+
+    assert_eq!(repo.read("host-only.txt"), "host");
+    assert!(!fake.path().join("podman.log").exists());
+}
+
+#[test]
+fn native_step_can_build_containerfile_for_single_step() {
+    let repo = TestRepo::new();
+    let fake = TempDir::new().expect("fake podman dir");
+    let fake_bin = make_fake_podman(fake.path());
+    repo.write(".ci/step.Containerfile", "FROM scratch\n");
+    repo.write(
+        ".ci/build.yml",
+        r#"
+on: [manual]
+steps:
+  - name: file step
+    container:
+      file: .ci/step.Containerfile
+    run: printf file > file.txt
+"#,
+    );
+
+    let mut command = repo.ci();
+    command.env("PATH", path_with_fake_bin(&fake_bin)).args([
+        "run",
+        "--container-runtime",
+        "podman",
+        "build",
+    ]);
+    assert_success(output(command));
+
+    assert_eq!(repo.read("file.txt"), "file");
+    let log = std::fs::read_to_string(fake.path().join("podman.log")).expect("read podman log");
+    assert!(log.contains("build --platform linux/amd64"));
+    assert!(log.contains(".ci/step.Containerfile"));
+    assert!(log.contains("localhost/ci-build-step-1-file-step-linux-amd64:latest"));
+}
+
+#[test]
 fn container_components_are_rejected_for_non_rust_stacks() {
     let repo = TestRepo::new();
     let fake = TempDir::new().expect("fake podman dir");
