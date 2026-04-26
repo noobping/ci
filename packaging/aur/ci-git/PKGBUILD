@@ -6,11 +6,12 @@ pkgdesc='Small Git-native CI runner and build tool'
 arch=('x86_64' 'aarch64')
 url='https://github.com/noobping/ci'
 license=('MIT')
-depends=('gcc-libs' 'git')
+depends=('gcc-libs')
 makedepends=('cargo' 'git')
 optdepends=(
   'podman: run containerized workflows and containerized Git fallback'
   'docker: run containerized workflows and containerized Git fallback'
+  'git: for native git'
 )
 provides=('ci')
 conflicts=('ci' 'rcs')
