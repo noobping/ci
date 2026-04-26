@@ -2,7 +2,7 @@ use std::ffi::OsString;
 
 use clap::{CommandFactory, Parser};
 
-use crate::config::ContainerType;
+use crate::config::{ArtifactMode, ContainerType, InstallMode};
 
 use super::{rewrite_argv, Cli, Commands, ListArgs};
 
@@ -35,6 +35,19 @@ fn list_porcelain_flags_override_auto_detection() {
     };
     assert!(!no_porcelain.use_porcelain(true));
     assert!(!no_porcelain.use_porcelain(false));
+}
+
+#[test]
+fn list_porcelain_short_works() {
+    let porcelain = match Cli::try_parse_from(["ci", "list", "-p"]).expect("parse") {
+        Cli {
+            command: Commands::List(args),
+            ..
+        } => args,
+        _ => panic!("expected list command"),
+    };
+
+    assert!(porcelain.use_porcelain(true));
 }
 
 #[test]
@@ -168,6 +181,36 @@ fn update_all_accepts_optional_path() {
 }
 
 #[test]
+fn update_short_flags_work() {
+    let cli = Cli::try_parse_from(rewrite([
+        "ci",
+        "update",
+        "-s",
+        "/tmp/ci",
+        "-n",
+        "-a",
+        "/tmp/projects",
+    ]))
+    .expect("parse");
+
+    match cli.command {
+        Commands::Update(args) => {
+            assert_eq!(
+                args.source.as_deref(),
+                Some(std::path::Path::new("/tmp/ci"))
+            );
+            assert!(args.dry_run);
+            assert!(args.all);
+            assert_eq!(
+                args.path.as_deref(),
+                Some(std::path::Path::new("/tmp/projects"))
+            );
+        }
+        _ => panic!("expected update command"),
+    }
+}
+
+#[test]
 fn update_path_targets_selected_repo() {
     let cli = Cli::try_parse_from(rewrite(["ci", "update", "/tmp/projects"])).expect("parse");
 
@@ -271,6 +314,134 @@ fn run_dry_run_before_separator_stays_ci_option() {
             assert!(args.args.is_empty());
         }
         _ => panic!("expected run command"),
+    }
+}
+
+#[test]
+fn run_short_flags_work() {
+    let cli = Cli::try_parse_from(rewrite([
+        "ci", "run", "-e", "pre-push", "-a", "-n", "-f", "-l",
+    ]))
+    .expect("parse");
+
+    match cli.command {
+        Commands::Run(args) => {
+            assert_eq!(args.event, "pre-push");
+            assert!(args.all);
+            assert!(args.dry_run);
+            assert!(args.fail_fast);
+            assert!(args.lock);
+        }
+        _ => panic!("expected run command"),
+    }
+}
+
+#[test]
+fn install_short_flags_work() {
+    let cli = Cli::try_parse_from(rewrite([
+        "ci", "install", "-m", "copy", "-s", "/tmp/ci", "-H", "pre-push", "-b", "-f", "-B", "-n",
+    ]))
+    .expect("parse");
+
+    match cli.command {
+        Commands::Install(args) => {
+            assert_eq!(args.mode, Some(InstallMode::Copy));
+            assert_eq!(
+                args.source.as_deref(),
+                Some(std::path::Path::new("/tmp/ci"))
+            );
+            assert_eq!(args.hooks.as_deref(), Some("pre-push"));
+            assert!(args.bare);
+            assert!(args.force);
+            assert!(args.backup_existing);
+            assert!(args.dry_run);
+        }
+        _ => panic!("expected install command"),
+    }
+}
+
+#[test]
+fn uninstall_short_flags_work() {
+    let cli = Cli::try_parse_from(rewrite([
+        "ci",
+        "uninstall",
+        "-H",
+        "pre-push",
+        "-k",
+        "-r",
+        "-n",
+    ]))
+    .expect("parse");
+
+    match cli.command {
+        Commands::Uninstall(args) => {
+            assert_eq!(args.hooks.as_deref(), Some("pre-push"));
+            assert!(args.keep_binary);
+            assert!(args.restore);
+            assert!(args.dry_run);
+        }
+        _ => panic!("expected uninstall command"),
+    }
+}
+
+#[test]
+fn clean_short_flags_work() {
+    let cli = Cli::try_parse_from(rewrite([
+        "ci",
+        "clean",
+        "build",
+        "-r",
+        "run-1",
+        "-m",
+        "move",
+        "-d",
+        "/tmp/artifacts",
+        "-n",
+    ]))
+    .expect("parse");
+
+    match cli.command {
+        Commands::Clean(args) => {
+            assert_eq!(args.workflow.as_deref(), Some("build"));
+            assert_eq!(args.run_id.as_deref(), Some("run-1"));
+            assert_eq!(args.mode, ArtifactMode::Move);
+            assert_eq!(
+                args.dest.as_deref(),
+                Some(std::path::Path::new("/tmp/artifacts"))
+            );
+            assert!(args.dry_run);
+        }
+        _ => panic!("expected clean command"),
+    }
+}
+
+#[test]
+fn init_completion_and_man_short_flags_work() {
+    let init = Cli::try_parse_from(rewrite(["ci", "init", "-f"])).expect("parse init");
+    match init.command {
+        Commands::Init(args) => assert!(args.force),
+        _ => panic!("expected init command"),
+    }
+
+    let completion =
+        Cli::try_parse_from(rewrite(["ci", "completion", "bash", "-o", "/tmp/ci.bash"]))
+            .expect("parse completion");
+    match completion.command {
+        Commands::Completion(args) => {
+            assert_eq!(
+                args.output.as_deref(),
+                Some(std::path::Path::new("/tmp/ci.bash"))
+            );
+        }
+        _ => panic!("expected completion command"),
+    }
+
+    let man = Cli::try_parse_from(rewrite(["ci", "man", "-d", "/tmp/man"])).expect("parse man");
+    match man.command {
+        Commands::Man(args) => {
+            assert_eq!(args.dir.as_deref(), Some(std::path::Path::new("/tmp/man")));
+        }
+        _ => panic!("expected man command"),
     }
 }
 

@@ -117,12 +117,12 @@ By default, .github and .gitea workflows are discovered only for bare repositori
 ci list
 ci build
 ci build -- --dry-run
-ci run --event pre-push build
+ci run -e pre-push build
 ci run --arch x64,arm64 --tech rust build
 ci explain build --arch x64 --tech rust
 ci schema workflow
-ci install --mode link --hooks pre-commit,pre-push
-ci man --dir ~/.local/share/man/man1
+ci install -m link -H pre-commit,pre-push
+ci man -d ~/.local/share/man/man1
 .EE
 .SH PRECEDENCE
 CLI flags override workflow fields, workflow fields override workflow defaults, workflow defaults override project config, project config overrides user config, user config overrides system config, and config overrides auto-detection. Values under policy or locked are applied after normal config and CLI flags; system policy is strongest, then user policy, then project policy.
@@ -220,8 +220,8 @@ ci run build --no-default-features
 ci build --features sqlite
 ci build -- --dry-run
 ci build --no-dry-run -- --dry-run
-ci run --all
-ci run --event pre-push build
+ci run -a
+ci run -e pre-push build
 ci run --arch x64,arm64 build
 ci run --tech node build
 ci run --container build
@@ -253,15 +253,15 @@ Porcelain output is tab-separated: name, provider, kind, and path.
             r#"
 .SH EXAMPLES
 .EX
-ci install --mode link --hooks pre-commit,pre-push
-ci install --mode copy --hooks pre-push
-ci install --backup-existing
+ci install -m link -H pre-commit,pre-push
+ci install -m copy -H pre-push
+ci install -B
 .EE
 .SH NOTES
 Link mode creates architecture-specific runners such as .git/ci/run.x64.
 Link mode always links to the current ci executable and removes other managed run.<arch> files.
 Copy mode copies the current ci binary into the repository. Hooks are direct symlinks with one runner and small selector scripts with multiple runners.
-The install_mode config default accepts link or copy and is used when --mode is omitted. policy.install_mode or locked.install_mode overrides --mode.
+The install_mode config default accepts link or copy and is used when --mode/-m is omitted. policy.install_mode or locked.install_mode overrides --mode/-m.
 "#,
         ),
         "ci-uninstall" => Some(
@@ -269,8 +269,8 @@ The install_mode config default accepts link or copy and is used when --mode is 
 .SH EXAMPLES
 .EX
 ci uninstall
-ci uninstall --restore
-ci uninstall --keep-binary
+ci uninstall -r
+ci uninstall -k
 .EE
 .SH NOTES
 Only hooks containing the managed-by: ci marker or pointing at managed .git/ci/run targets are removed automatically.
@@ -286,7 +286,7 @@ ci update --all ~/Projects
 ci update ~/Projects/myproject
 ci update -r ~/Projects
 ci update --recursive ~/Projects
-ci update --source ./target/release/ci
+ci update -s ./target/release/ci
 .EE
 .SH NOTES
 For link installs this refreshes links. For copy installs this copies the current or selected binary again.
@@ -354,8 +354,8 @@ Prints JSON Schema for editor integration and external validation tooling.
 .EX
 ci clean
 ci clean build
-ci clean --mode move --dest ./ci-artifacts
-ci clean --run-id 123 --dry-run
+ci clean -m move -d ./ci-artifacts
+ci clean -r 123 -n
 .EE
 .SH NOTES
 Exports or keeps recorded artifacts from .git/ci artifacts and run manifests.
@@ -386,8 +386,8 @@ ci completion bash --output ~/.local/share/bash-completion/completions/ci
 .SH EXAMPLES
 .EX
 ci man
-ci man --dir ./target/man
-ci man --dir ~/.local/share/man/man1
+ci man -d ./target/man
+ci man -d ~/.local/share/man/man1
 .EE
 .SH NOTES
 When --dir is set, ci writes ci.1 and one page per subcommand.

@@ -172,6 +172,7 @@ pub enum Commands {
 #[derive(Clone, Debug, Args, Default)]
 pub struct ListArgs {
     #[arg(
+        short = 'p',
         long = "porcelain",
         conflicts_with = "no_porcelain",
         help = "Use stable tab-separated output"
@@ -208,16 +209,22 @@ pub struct RunArgs {
     pub args: Vec<String>,
 
     #[arg(
+        short = 'e',
         long = "event",
         default_value = "manual",
         help = "Event name used to select workflows"
     )]
     pub event: String,
 
-    #[arg(long = "all", help = "Run all workflows selected by the event")]
+    #[arg(
+        short = 'a',
+        long = "all",
+        help = "Run all workflows selected by the event"
+    )]
     pub all: bool,
 
     #[arg(
+        short = 'n',
         long = "dry-run",
         action = ArgAction::SetTrue,
         overrides_with = "no_dry_run",
@@ -233,10 +240,15 @@ pub struct RunArgs {
     )]
     pub no_dry_run: bool,
 
-    #[arg(long = "fail-fast", help = "Stop after the first failing workflow")]
+    #[arg(
+        short = 'f',
+        long = "fail-fast",
+        help = "Stop after the first failing workflow"
+    )]
     pub fail_fast: bool,
 
     #[arg(
+        short = 'k',
         long = "keep-going",
         help = "Continue running later workflows after failures"
     )]
@@ -260,64 +272,91 @@ pub struct RunArgs {
     )]
     pub no_recursive_checkout: bool,
 
-    #[arg(long = "lock", help = "Serialize this run with the repository ci lock")]
+    #[arg(
+        short = 'l',
+        long = "lock",
+        help = "Serialize this run with the repository ci lock"
+    )]
     pub lock: bool,
 }
 
 #[derive(Clone, Debug, Args)]
 pub struct InstallArgs {
-    #[arg(long = "mode", help = "Install mode for hook runners")]
+    #[arg(short = 'm', long = "mode", help = "Install mode for hook runners")]
     pub mode: Option<InstallMode>,
 
     #[arg(
+        short = 's',
         long = "source",
         help = "Binary source to install; use {arch} for per-architecture sources"
     )]
     pub source: Option<PathBuf>,
 
-    #[arg(long = "hooks", help = "Hooks to manage, comma-separated, or `all`")]
+    #[arg(
+        short = 'H',
+        long = "hooks",
+        help = "Hooks to manage, comma-separated, or `all`"
+    )]
     pub hooks: Option<String>,
 
-    #[arg(long = "bare", help = "Install into a bare repository")]
+    #[arg(short = 'b', long = "bare", help = "Install into a bare repository")]
     pub bare: bool,
 
-    #[arg(long = "force", help = "Overwrite existing unmanaged hook files")]
+    #[arg(
+        short = 'f',
+        long = "force",
+        help = "Overwrite existing unmanaged hook files"
+    )]
     pub force: bool,
 
     #[arg(
+        short = 'B',
         long = "backup-existing",
         help = "Back up existing hooks before replacing them"
     )]
     pub backup_existing: bool,
 
-    #[arg(long = "dry-run", help = "Show what would be installed")]
+    #[arg(short = 'n', long = "dry-run", help = "Show what would be installed")]
     pub dry_run: bool,
 }
 
 #[derive(Clone, Debug, Args)]
 pub struct UninstallArgs {
-    #[arg(long = "hooks", help = "Hooks to remove, comma-separated, or `all`")]
+    #[arg(
+        short = 'H',
+        long = "hooks",
+        help = "Hooks to remove, comma-separated, or `all`"
+    )]
     pub hooks: Option<String>,
 
-    #[arg(long = "keep-binary", help = "Keep the installed runner binary")]
+    #[arg(
+        short = 'k',
+        long = "keep-binary",
+        help = "Keep the installed runner binary"
+    )]
     pub keep_binary: bool,
 
-    #[arg(long = "restore", help = "Restore backups for removed hooks")]
+    #[arg(
+        short = 'r',
+        long = "restore",
+        help = "Restore backups for removed hooks"
+    )]
     pub restore: bool,
 
-    #[arg(long = "dry-run", help = "Show what would be removed")]
+    #[arg(short = 'n', long = "dry-run", help = "Show what would be removed")]
     pub dry_run: bool,
 }
 
 #[derive(Clone, Debug, Args)]
 pub struct UpdateArgs {
     #[arg(
+        short = 's',
         long = "source",
         help = "Binary source to install; use {arch} for per-architecture sources"
     )]
     pub source: Option<PathBuf>,
 
-    #[arg(long = "dry-run", help = "Show what would be updated")]
+    #[arg(short = 'n', long = "dry-run", help = "Show what would be updated")]
     pub dry_run: bool,
 
     #[arg(
@@ -384,26 +423,39 @@ pub struct CleanArgs {
     )]
     pub workflow: Option<String>,
 
-    #[arg(long = "run-id", help = "Clean artifacts from a specific run id")]
+    #[arg(
+        short = 'r',
+        long = "run-id",
+        help = "Clean artifacts from a specific run id"
+    )]
     pub run_id: Option<String>,
 
     #[arg(
+        short = 'm',
         long = "mode",
         default_value = "keep",
         help = "How to handle matched artifacts"
     )]
     pub mode: ArtifactMode,
 
-    #[arg(long = "dest", help = "Destination for exported artifacts")]
+    #[arg(
+        short = 'd',
+        long = "dest",
+        help = "Destination for exported artifacts"
+    )]
     pub dest: Option<PathBuf>,
 
-    #[arg(long = "dry-run", help = "Show what would be cleaned")]
+    #[arg(short = 'n', long = "dry-run", help = "Show what would be cleaned")]
     pub dry_run: bool,
 }
 
 #[derive(Clone, Debug, Args)]
 pub struct InitArgs {
-    #[arg(long = "force", help = "Replace an existing .ci/build.yml")]
+    #[arg(
+        short = 'f',
+        long = "force",
+        help = "Replace an existing .ci/build.yml"
+    )]
     pub force: bool,
 }
 
@@ -417,13 +469,17 @@ pub struct CompletionArgs {
     #[arg(value_enum, help = "Shell to generate completions for")]
     pub shell: CompletionShell,
 
-    #[arg(long = "output", help = "Write completions to a file")]
+    #[arg(short = 'o', long = "output", help = "Write completions to a file")]
     pub output: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Args)]
 pub struct ManArgs {
-    #[arg(long = "dir", help = "Directory to write generated man pages into")]
+    #[arg(
+        short = 'd',
+        long = "dir",
+        help = "Directory to write generated man pages into"
+    )]
     pub dir: Option<PathBuf>,
 }
 

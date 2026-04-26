@@ -331,7 +331,7 @@ git_command:
   - git
 ```
 
-`install_mode` accepts `link` or `copy` and is used when `ci install` is run without `--mode`; the CLI flag wins over normal config. Put defaults under `policy:` or `locked:` to apply them after normal config and CLI flags. For policy values, system config is strongest, then user config, then project config, so `/etc/ci.yml` can enforce a managed default such as:
+`install_mode` accepts `link` or `copy` and is used when `ci install` is run without `--mode`/`-m`; the CLI flag wins over normal config. Put defaults under `policy:` or `locked:` to apply them after normal config and CLI flags. For policy values, system config is strongest, then user config, then project config, so `/etc/ci.yml` can enforce a managed default such as:
 
 ```yaml
 locked:
@@ -625,7 +625,7 @@ run: echo "$CI_ARCH"
 ### Link mode
 
 ```sh
-ci install --mode link
+ci install -m link
 ```
 
 Creates an arch-specific symlink such as `.git/ci/run.x64` to the currently running `ci` binary. Link mode is a single-current-executable install: managed hooks are direct symlinks to that runner, and reinstalling with link mode removes other managed `run.<arch>` files before rewriting hooks back to the current machine.
@@ -635,7 +635,7 @@ Creates an arch-specific symlink such as `.git/ci/run.x64` to the currently runn
 ### Copy mode
 
 ```sh
-ci install --mode copy
+ci install -m copy
 ```
 
 Copies the currently running `ci` binary into an arch-specific path such as `.git/ci/run.x64`.
@@ -647,7 +647,7 @@ With one installed architecture, managed hooks are direct symlinks such as `.git
 Copy installs can use per-architecture sources:
 
 ```sh
-ci --arch x64,arm64 install --mode copy --source 'dist/ci-linux-{arch}'
+ci --arch x64,arm64 install -m copy -s 'dist/ci-linux-{arch}'
 ```
 
 That installs `dist/ci-linux-x64` to `.git/ci/run.x64` and `dist/ci-linux-arm64` to `.git/ci/run.arm64`.
@@ -664,7 +664,7 @@ ci update --recursive
 ci other
 ```
 
-For link mode, this refreshes the runner symlink. For copy mode, this copies the current binary again. `ci update --source 'dist/ci-linux-{arch}'` uses the same per-architecture source template as install. Managed hooks are refreshed as direct symlinks when one runner is installed, or selector scripts when multiple runners are installed.
+For link mode, this refreshes the runner symlink. For copy mode, this copies the current binary again. `ci update -s 'dist/ci-linux-{arch}'` uses the same per-architecture source template as install. Managed hooks are refreshed as direct symlinks when one runner is installed, or selector scripts when multiple runners are installed.
 
 Use `ci update PATH` to update another repository directly. Use `ci update --all [PATH]` to update Git repositories directly in that directory, without descending further. Use `ci update -r [PATH]` or `ci update --recursive [PATH]` to search recursively. Repositories without an installed `.git/ci/run...` binary are skipped.
 
@@ -698,17 +698,17 @@ ci completion bash --output ~/.local/share/bash-completion/completions/ci
 Generate `man1` pages:
 
 ```sh
-ci man --dir ./target/man
+ci man -d ./target/man
 ```
 
 Install them locally:
 
 ```sh
 mkdir -p ~/.local/share/man/man1
-ci man --dir ~/.local/share/man/man1
+ci man -d ~/.local/share/man/man1
 ```
 
-`ci man --dir` writes `ci.1` and one page per subcommand.
+`ci man --dir`/`-d` writes `ci.1` and one page per subcommand.
 
 ## Remove
 
@@ -769,7 +769,7 @@ artifacts:
 Artifacts can later be exported with:
 
 ```sh
-ci clean --mode move --dest ./ci-artifacts
+ci clean -m move -d ./ci-artifacts
 ```
 
 Build outputs can also be copied during a workflow:
