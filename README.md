@@ -565,7 +565,9 @@ run: echo "$CI_ARCH"
 ci install --mode link
 ```
 
-Creates an arch-specific symlink such as `.git/ci/run.x64` to the currently running `ci` binary. Managed hooks choose `.git/ci/run.x64`, `.git/ci/run.arm64`, or another matching runner from `uname -m`, with `.git/ci/run` kept as a legacy fallback.
+Creates an arch-specific symlink such as `.git/ci/run.x64` to the currently running `ci` binary. Link mode is a single-current-executable install: managed hooks are direct symlinks to that runner, and reinstalling with link mode removes other managed `run.<arch>` files before rewriting hooks back to the current machine.
+
+`--source` is for copy installs; link mode always links the repository runner to the current `ci` executable.
 
 ### Copy mode
 
@@ -576,6 +578,8 @@ ci install --mode copy
 Copies the currently running `ci` binary into an arch-specific path such as `.git/ci/run.x64`.
 
 When no `--source` is set, copy mode installs only the current machine's architecture. That means you can run the same install once on an x64 machine and once on an arm64 machine to populate both `.git/ci/run.x64` and `.git/ci/run.arm64` without extra flags.
+
+With one installed architecture, managed hooks are direct symlinks such as `.git/hooks/pre-push -> ../ci/run.x64`. When copy mode installs or detects multiple `.git/ci/run.<arch>` binaries, managed hooks become small scripts that select the matching runner from `uname -m`.
 
 Copy installs can use per-architecture sources:
 
@@ -591,7 +595,7 @@ That installs `dist/ci-linux-x64` to `.git/ci/run.x64` and `dist/ci-linux-arm64`
 ci update
 ```
 
-For link mode, this refreshes the runner symlink. For copy mode, this copies the current binary again. `ci update --source 'dist/ci-linux-{arch}'` uses the same per-architecture source template as install. Managed hook files are symlinks to one shared dispatcher at `.git/ci/hook`.
+For link mode, this refreshes the runner symlink. For copy mode, this copies the current binary again. `ci update --source 'dist/ci-linux-{arch}'` uses the same per-architecture source template as install. Managed hooks are refreshed as direct symlinks when one runner is installed, or selector scripts when multiple runners are installed.
 
 ## Status and explain
 
@@ -639,7 +643,7 @@ ci man --dir ~/.local/share/man/man1
 ci uninstall
 ```
 
-Only removes hooks that contain the `managed-by: ci` marker.
+Only removes hooks that contain the `managed-by: ci` marker or point at a managed `.git/ci/run...` target.
 
 Use:
 
@@ -657,10 +661,18 @@ to restore backed-up hooks named `hook-name.ci-backup`.
 ci hook pre-commit
 ```
 
-or be invoked directly as a Git hook. Installed hooks are symlinks to `.git/ci/hook`, a shared dispatcher that selects the arch-specific runner and calls:
+or be invoked directly as a Git hook.
+
+With one installed runner, installed hooks are symlinks to the runner:
 
 ```sh
-../ci/run hook <hook-name> "$@"
+.git/hooks/pre-push -> ../ci/run.x64
+```
+
+With multiple installed runners, each hook is a small managed script that selects the arch-specific runner and calls:
+
+```sh
+../ci/run.$ci_arch hook <hook-name> "$@"
 ```
 
 ## Artifacts

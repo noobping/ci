@@ -214,7 +214,8 @@ ci install --backup-existing
 .EE
 .SH NOTES
 Link mode creates architecture-specific runners such as .git/ci/run.x64.
-Copy mode copies the current ci binary into the repository.
+Link mode always links to the current ci executable and removes other managed run.<arch> files.
+Copy mode copies the current ci binary into the repository. Hooks are direct symlinks with one runner and small selector scripts with multiple runners.
 "#,
         ),
         "ci-uninstall" => Some(
@@ -226,7 +227,7 @@ ci uninstall --restore
 ci uninstall --keep-binary
 .EE
 .SH NOTES
-Only hooks containing the managed-by: ci marker are removed automatically.
+Only hooks containing the managed-by: ci marker or pointing at managed .git/ci/run targets are removed automatically.
 "#,
         ),
         "ci-update" => Some(

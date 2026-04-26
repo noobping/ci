@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -12,6 +13,12 @@ use crate::workflow::all_hooks;
 pub const MANAGED_MARKER: &str = "managed-by: ci";
 pub const MANAGED_HOOK_NAME: &str = "hook";
 pub const MANAGED_RUNNER_NAME: &str = "run";
+
+#[derive(Clone, Debug)]
+enum HookInstallStrategy {
+    DirectSymlink(PathBuf),
+    UniversalScript,
+}
 
 #[derive(Clone, Debug)]
 pub struct InstallState {
@@ -45,7 +52,12 @@ pub struct HookState {
 pub fn cmd_install(ctx: &AppContext, args: &InstallArgs) -> Result<i32> {
     let hooks = parse_hooks(args.hooks.as_deref(), ctx.repo.is_bare)?;
     let ci_bin_dir = managed_runner_dir(&ctx.repo);
-    let target_arches = install_target_arches(args.source.as_deref(), &ctx.config.defaults.arch);
+    let source = install_source_for_mode(&args.mode, args.source.as_deref());
+    let target_arches = install_target_arches_for_mode(
+        &args.mode,
+        args.source.as_deref(),
+        &ctx.config.defaults.arch,
+    );
     let ci_bins = managed_runner_targets(&ctx.repo, &target_arches);
     let hooks_dir = ctx.repo.git_dir.join("hooks");
 
@@ -57,24 +69,32 @@ pub fn cmd_install(ctx: &AppContext, args: &InstallArgs) -> Result<i32> {
     if args.dry_run {
         println!("would create directory {}", ci_bin_dir.display());
         for (arch, ci_bin) in &ci_bins {
-            let source =
-                install_source_for_arch(&ctx.repo.current_exe, args.source.as_deref(), arch);
+            let source = install_source_for_arch(&ctx.repo.current_exe, source, arch);
             println!(
                 "would install binary {} from {}",
                 ci_bin.display(),
                 source.display()
             );
         }
+        if matches!(args.mode, InstallMode::Link) {
+            for stale_runner in stale_managed_runner_paths(&ctx.repo, &target_arches) {
+                println!("would remove stale binary {}", stale_runner.display());
+            }
+        }
     } else {
         fs::create_dir_all(&ci_bin_dir)?;
         for (arch, ci_bin) in &ci_bins {
-            let source =
-                install_source_for_arch(&ctx.repo.current_exe, args.source.as_deref(), arch);
+            let source = install_source_for_arch(&ctx.repo.current_exe, source, arch);
             install_binary(&source, ci_bin, &args.mode)?;
         }
-        install_hook_dispatcher(&managed_hook_dispatcher_path(&ctx.repo))?;
+        if matches!(args.mode, InstallMode::Link) {
+            remove_stale_managed_runners(&ctx.repo, &target_arches)?;
+        }
+        remove_file_if_exists(&managed_hook_dispatcher_path(&ctx.repo))?;
         fs::create_dir_all(&hooks_dir)?;
     }
+
+    let hook_strategy = install_hook_strategy(&ctx.repo, &args.mode, &target_arches);
 
     for hook in hooks {
         let hook_path = hooks_dir.join(hook);
@@ -82,7 +102,13 @@ pub fn cmd_install(ctx: &AppContext, args: &InstallArgs) -> Result<i32> {
             println!("would install hook {}", hook_path.display());
             continue;
         }
-        install_hook(&hook_path, hook, args.force, args.backup_existing)?;
+        install_hook(
+            &hook_path,
+            hook,
+            args.force,
+            args.backup_existing,
+            &hook_strategy,
+        )?;
     }
 
     ctx.output.info("Done.");
@@ -129,7 +155,7 @@ pub fn cmd_update(ctx: &AppContext, args: &UpdateArgs) -> Result<i32> {
                 chmod_executable(ci_bin)?;
             }
         }
-        install_hook_dispatcher(&managed_hook_dispatcher_path(&ctx.repo))?;
+        remove_file_if_exists(&managed_hook_dispatcher_path(&ctx.repo))?;
     }
 
     refresh_managed_hooks(ctx, args.dry_run)?;
@@ -145,7 +171,7 @@ pub fn cmd_uninstall(ctx: &AppContext, args: &UninstallArgs) -> Result<i32> {
         let hook_path = hooks_dir.join(hook);
         let backup_path = hooks_dir.join(format!("{hook}.ci-backup"));
 
-        if !hook_path.exists() {
+        if !path_exists_or_symlink(&hook_path) {
             if args.restore && backup_path.exists() {
                 if args.dry_run {
                     println!(
@@ -292,13 +318,14 @@ pub fn parse_hooks(input: Option<&str>, is_bare: bool) -> Result<Vec<&'static st
 
 fn refresh_managed_hooks(ctx: &AppContext, dry_run: bool) -> Result<()> {
     let hooks_dir = ctx.repo.git_dir.join("hooks");
+    let hook_strategy = refresh_hook_strategy(&ctx.repo);
     for hook in all_hooks() {
         let hook_path = hooks_dir.join(hook);
         if is_managed_hook(&hook_path) {
             if dry_run {
                 println!("would refresh hook {}", hook_path.display());
             } else {
-                install_hook(&hook_path, hook, true, false)?;
+                install_hook(&hook_path, hook, true, false, &hook_strategy)?;
             }
         }
     }
@@ -346,8 +373,130 @@ fn source_has_arch_template(source: &Path) -> bool {
     source.to_string_lossy().contains("{arch}")
 }
 
-fn install_hook_dispatcher(path: &Path) -> Result<()> {
-    let script = format!(
+fn install_source_for_mode<'a>(mode: &InstallMode, source: Option<&'a Path>) -> Option<&'a Path> {
+    match mode {
+        InstallMode::Link => None,
+        InstallMode::Copy => source,
+    }
+}
+
+fn install_target_arches_for_mode(
+    mode: &InstallMode,
+    source: Option<&Path>,
+    configured: &[Architecture],
+) -> Vec<Architecture> {
+    match mode {
+        InstallMode::Link => vec![Architecture::host()],
+        InstallMode::Copy => install_target_arches(source, configured),
+    }
+}
+
+fn install_hook_strategy(
+    repo: &RepoInfo,
+    mode: &InstallMode,
+    target_arches: &[Architecture],
+) -> HookInstallStrategy {
+    if matches!(mode, InstallMode::Link) {
+        return direct_hook_strategy(target_arches);
+    }
+
+    let final_arches = final_runner_arches(repo, target_arches);
+    if final_arches.len() > 1 {
+        HookInstallStrategy::UniversalScript
+    } else {
+        direct_hook_strategy_for_suffix(final_arches.into_iter().next())
+    }
+}
+
+fn refresh_hook_strategy(repo: &RepoInfo) -> HookInstallStrategy {
+    let installed_arches = existing_runner_arches(repo);
+    if installed_arches.len() > 1 {
+        HookInstallStrategy::UniversalScript
+    } else {
+        direct_hook_strategy_for_suffix(installed_arches.into_iter().next())
+    }
+}
+
+fn direct_hook_strategy(target_arches: &[Architecture]) -> HookInstallStrategy {
+    direct_hook_strategy_for_suffix(
+        runner_arches(target_arches)
+            .into_iter()
+            .next()
+            .map(|arch| arch.runner_suffix()),
+    )
+}
+
+fn direct_hook_strategy_for_suffix(suffix: Option<String>) -> HookInstallStrategy {
+    let suffix = suffix.unwrap_or_else(|| Architecture::host().runner_suffix());
+    HookInstallStrategy::DirectSymlink(PathBuf::from(format!(
+        "../ci/{MANAGED_RUNNER_NAME}.{suffix}"
+    )))
+}
+
+fn final_runner_arches(repo: &RepoInfo, target_arches: &[Architecture]) -> BTreeSet<String> {
+    let mut arches = existing_runner_arches(repo);
+    for arch in runner_arches(target_arches) {
+        arches.insert(arch.runner_suffix());
+    }
+    arches
+}
+
+fn existing_runner_arches(repo: &RepoInfo) -> BTreeSet<String> {
+    let mut arches = BTreeSet::new();
+    let Ok(entries) = fs::read_dir(managed_runner_dir(repo)) else {
+        return arches;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path_exists_or_symlink(&path) {
+            continue;
+        }
+        if let Some(suffix) = runner_suffix_from_path(&path) {
+            arches.insert(suffix.to_string());
+        }
+    }
+
+    arches
+}
+
+fn remove_stale_managed_runners(repo: &RepoInfo, keep_arches: &[Architecture]) -> Result<()> {
+    for runner in stale_managed_runner_paths(repo, keep_arches) {
+        remove_file_if_exists(&runner)?;
+    }
+    Ok(())
+}
+
+fn stale_managed_runner_paths(repo: &RepoInfo, keep_arches: &[Architecture]) -> Vec<PathBuf> {
+    let keep: BTreeSet<_> = runner_arches(keep_arches)
+        .into_iter()
+        .map(|arch| arch.runner_suffix())
+        .collect();
+
+    let Ok(entries) = fs::read_dir(managed_runner_dir(repo)) else {
+        return Vec::new();
+    };
+
+    entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            runner_suffix_from_path(path)
+                .map(|suffix| !keep.contains(suffix))
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
+fn runner_suffix_from_path(path: &Path) -> Option<&str> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix(&format!("{MANAGED_RUNNER_NAME}.")))
+        .filter(|suffix| !suffix.is_empty())
+}
+
+fn universal_hook_script() -> String {
+    format!(
         "#!/usr/bin/env sh\n\
          # {MANAGED_MARKER}\n\
          ci_hook=$(basename \"$0\")\n\
@@ -363,13 +512,16 @@ fn install_hook_dispatcher(path: &Path) -> Result<()> {
          \tci_runner=\"$ci_dir/{MANAGED_RUNNER_NAME}\"\n\
          fi\n\
          exec \"$ci_runner\" hook \"$ci_hook\" \"$@\"\n"
-    );
-    fs::write(path, script)?;
-    chmod_executable(path)?;
-    Ok(())
+    )
 }
 
-fn install_hook(hook_path: &Path, hook: &str, force: bool, backup_existing: bool) -> Result<()> {
+fn install_hook(
+    hook_path: &Path,
+    hook: &str,
+    force: bool,
+    backup_existing: bool,
+    strategy: &HookInstallStrategy,
+) -> Result<()> {
     if path_exists_or_symlink(hook_path) && !is_managed_hook(hook_path) {
         if backup_existing {
             let backup_path = hook_path.with_file_name(format!("{hook}.ci-backup"));
@@ -384,7 +536,13 @@ fn install_hook(hook_path: &Path, hook: &str, force: bool, backup_existing: bool
     }
 
     remove_file_if_exists(hook_path)?;
-    symlink(format!("../ci/{MANAGED_HOOK_NAME}"), hook_path)?;
+    match strategy {
+        HookInstallStrategy::DirectSymlink(target) => symlink(target, hook_path)?,
+        HookInstallStrategy::UniversalScript => {
+            fs::write(hook_path, universal_hook_script())?;
+            chmod_executable(hook_path)?;
+        }
+    }
     Ok(())
 }
 
@@ -438,7 +596,7 @@ fn path_exists_or_symlink(path: &Path) -> bool {
 
 pub fn is_managed_hook(path: &Path) -> bool {
     if fs::read_link(path)
-        .map(|target| target == Path::new("../ci").join(MANAGED_HOOK_NAME))
+        .map(|target| is_managed_hook_symlink_target(&target))
         .unwrap_or(false)
     {
         return true;
@@ -447,6 +605,21 @@ pub fn is_managed_hook(path: &Path) -> bool {
     fs::read_to_string(path)
         .map(|content| content.contains(MANAGED_MARKER))
         .unwrap_or(false)
+}
+
+fn is_managed_hook_symlink_target(target: &Path) -> bool {
+    let ci_dir = Path::new("../ci");
+    if target == ci_dir.join(MANAGED_HOOK_NAME) || target == ci_dir.join(MANAGED_RUNNER_NAME) {
+        return true;
+    }
+
+    target.parent() == Some(ci_dir)
+        && target
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_prefix(&format!("{MANAGED_RUNNER_NAME}.")))
+            .map(|suffix| !suffix.is_empty())
+            .unwrap_or(false)
 }
 
 pub fn is_symlink(path: &Path) -> bool {

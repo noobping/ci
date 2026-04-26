@@ -351,21 +351,35 @@ steps:
 #[test]
 fn install_and_uninstall_manage_hooks_and_runner_binary() {
     let repo = TestRepo::new();
+    repo.write(
+        ".ci/pre-push.yml",
+        r#"
+on: [pre-push]
+steps:
+  - run: printf single > hooked.txt
+"#,
+    );
 
     let mut install = repo.ci();
     install.args(["install", "--mode", "copy", "--hooks", "pre-push"]);
     assert_success(output(install));
 
-    assert!(repo.path().join(".git/hooks/pre-push").exists());
+    let host_arch = host_runner_suffix();
+    let hook_path = repo.path().join(".git/hooks/pre-push");
+    assert!(hook_path.exists());
     assert_eq!(
-        fs::read_link(repo.path().join(".git/hooks/pre-push")).expect("read hook symlink"),
-        std::path::PathBuf::from("../ci/hook")
+        fs::read_link(&hook_path).expect("read hook symlink"),
+        std::path::PathBuf::from(format!("../ci/run.{host_arch}"))
     );
-    assert!(repo.path().join(".git/ci/hook").exists());
-    assert!(
-        repo.path().join(".git/ci/run.x64").exists()
-            || repo.path().join(".git/ci/run.arm64").exists()
-    );
+    assert!(!repo.path().join(".git/ci/hook").exists());
+    assert!(repo
+        .path()
+        .join(format!(".git/ci/run.{host_arch}"))
+        .exists());
+    let mut hook_command = Command::new(&hook_path);
+    hook_command.current_dir(repo.path());
+    assert_success(output(hook_command));
+    assert_eq!(repo.read("hooked.txt"), "single");
 
     let mut uninstall = repo.ci();
     uninstall.args(["uninstall"]);
@@ -397,16 +411,20 @@ fn copy_install_can_use_per_arch_sources() {
 
     assert_eq!(repo.read(".git/ci/run.x64"), "x64");
     assert_eq!(repo.read(".git/ci/run.arm64"), "arm64");
+    let hook_path = repo.path().join(".git/hooks/pre-push");
+    assert!(!fs::symlink_metadata(&hook_path)
+        .expect("hook metadata")
+        .file_type()
+        .is_symlink());
+    let hook = repo.read(".git/hooks/pre-push");
+    assert!(hook.contains("ci_hook=$(basename \"$0\")"));
+    assert!(hook.contains("run.$ci_arch"));
 }
 
 #[test]
 fn copy_install_without_source_uses_host_arch_only() {
     let repo = TestRepo::new();
-    let host_arch = match std::env::consts::ARCH {
-        "x86_64" | "amd64" => "x64",
-        "aarch64" | "arm64" => "arm64",
-        other => other,
-    };
+    let host_arch = host_runner_suffix();
 
     let mut install = repo.ci();
     install.args([
@@ -426,5 +444,93 @@ fn copy_install_without_source_uses_host_arch_only() {
     }
     if host_arch != "arm64" {
         assert!(!repo.exists(".git/ci/run.arm64"));
+    }
+    assert_eq!(
+        fs::read_link(repo.path().join(".git/hooks/pre-push")).expect("read hook symlink"),
+        std::path::PathBuf::from(format!("../ci/run.{host_arch}"))
+    );
+}
+
+#[test]
+fn copy_install_adds_host_arch_to_existing_runner_and_switches_hooks_to_script() {
+    let repo = TestRepo::new();
+    let host_arch = host_runner_suffix();
+    let other_arch = if host_arch == "x64" { "arm64" } else { "x64" };
+    repo.write(&format!(".git/ci/run.{other_arch}"), "other");
+    repo.write(
+        ".ci/pre-push.yml",
+        r#"
+on: [pre-push]
+steps:
+  - run: printf script > hooked.txt
+"#,
+    );
+
+    let mut install = repo.ci();
+    install.args(["install", "--mode", "copy", "--hooks", "pre-push"]);
+    assert_success(output(install));
+
+    assert!(repo.exists(&format!(".git/ci/run.{host_arch}")));
+    assert!(repo.exists(&format!(".git/ci/run.{other_arch}")));
+    let hook_path = repo.path().join(".git/hooks/pre-push");
+    assert!(!fs::symlink_metadata(&hook_path)
+        .expect("hook metadata")
+        .file_type()
+        .is_symlink());
+    let hook = repo.read(".git/hooks/pre-push");
+    assert!(hook.contains("run.$ci_arch"));
+    let mut hook_command = Command::new(&hook_path);
+    hook_command.current_dir(repo.path());
+    assert_success(output(hook_command));
+    assert_eq!(repo.read("hooked.txt"), "script");
+}
+
+#[test]
+fn link_install_uses_current_host_runner_even_with_source_template() {
+    let repo = TestRepo::new();
+    repo.write("dist/ci-linux-x64", "x64");
+    repo.write("dist/ci-linux-arm64", "arm64");
+    let source = repo.path().join("dist/ci-linux-{arch}");
+    let host_arch = host_runner_suffix();
+    let stale_arch = if host_arch == "x64" { "arm64" } else { "x64" };
+    repo.write(&format!(".git/ci/run.{stale_arch}"), "stale");
+
+    let mut install = repo.ci();
+    install.args([
+        "--arch",
+        "x64,arm64",
+        "install",
+        "--mode",
+        "link",
+        "--source",
+        source.to_str().expect("source path"),
+        "--hooks",
+        "pre-push",
+    ]);
+    assert_success(output(install));
+
+    assert!(
+        fs::symlink_metadata(repo.path().join(format!(".git/ci/run.{host_arch}")))
+            .expect("runner metadata")
+            .file_type()
+            .is_symlink()
+    );
+    if host_arch != "x64" {
+        assert!(!repo.exists(".git/ci/run.x64"));
+    }
+    if host_arch != "arm64" {
+        assert!(!repo.exists(".git/ci/run.arm64"));
+    }
+    assert_eq!(
+        fs::read_link(repo.path().join(".git/hooks/pre-push")).expect("read hook symlink"),
+        std::path::PathBuf::from(format!("../ci/run.{host_arch}"))
+    );
+}
+
+fn host_runner_suffix() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86_64" | "amd64" => "x64",
+        "aarch64" | "arm64" => "arm64",
+        other => other,
     }
 }
