@@ -131,7 +131,7 @@ git_mode accepts auto, host, flatpak, custom, or alias. auto detects Flatpak and
 Unknown top-level commands are treated as workflow names, so ci build is equivalent to ci run build.
 Arguments after the build workflow name are forwarded to the detected build step. Use -- before build-command flags when a flag name overlaps with ci, for example ci build -- --dry-run.
 .SH CONDITIONS
-exists(value) checks for a repo-relative path or command. has(value) and is(value) are aliases. missing(value) is the inverse, and not(value) is an alias. Word forms such as is exists(value), not exists(value), and not missing(value) are also accepted.
+exists(value) checks for a repo-relative path or command. Parentheses are optional, so exists value, has value, and is value are accepted too. missing(value) is the inverse, and not(value) is an alias. Word forms such as is exists(value), not exists value, and not missing value are also accepted.
 .SH NATIVE WORKFLOW EXAMPLE
 .EX
 name: build

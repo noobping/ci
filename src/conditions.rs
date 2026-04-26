@@ -79,10 +79,35 @@ pub(crate) fn evaluate_condition_with_probe(
         return Ok(condition_arch_matches(target, ctx));
     }
 
+    if let Some(target) = word_function_arg(expr, "arch") {
+        return Ok(condition_arch_matches(target, ctx));
+    }
+    if let Some(target) = word_function_arg_any(expr, &["exists", "has"]) {
+        return condition_target_exists(&resolve_condition_target(target, ctx), ctx, command_probe);
+    }
+    if let Some(target) = word_function_arg(expr, "missing") {
+        return condition_target_exists(&resolve_condition_target(target, ctx), ctx, command_probe)
+            .map(|exists| !exists);
+    }
     if let Some(rest) = word_prefix_arg(expr, "is") {
+        if !is_nested_condition_expr(rest) {
+            return condition_target_exists(
+                &resolve_condition_target(rest, ctx),
+                ctx,
+                command_probe,
+            );
+        }
         return evaluate_condition_with_probe(Some(rest), ctx, command_probe);
     }
     if let Some(rest) = word_prefix_arg(expr, "not") {
+        if !is_nested_condition_expr(rest) {
+            return condition_target_exists(
+                &resolve_condition_target(rest, ctx),
+                ctx,
+                command_probe,
+            )
+            .map(|exists| !exists);
+        }
         return Ok(!evaluate_condition_with_probe(
             Some(rest),
             ctx,
@@ -339,6 +364,46 @@ fn word_prefix_arg<'a>(expr: &'a str, word: &str) -> Option<&'a str> {
     } else {
         None
     }
+}
+
+fn word_function_arg<'a>(expr: &'a str, word: &str) -> Option<&'a str> {
+    let target = word_prefix_arg(expr, word)?;
+    if target.is_empty() || target.starts_with('(') {
+        None
+    } else {
+        Some(target)
+    }
+}
+
+fn word_function_arg_any<'a>(expr: &'a str, names: &[&str]) -> Option<&'a str> {
+    names.iter().find_map(|name| word_function_arg(expr, name))
+}
+
+fn is_nested_condition_expr(expr: &str) -> bool {
+    let expr = trim_expr(expr);
+    matches!(
+        expr,
+        "true"
+            | "false"
+            | "always"
+            | "always()"
+            | "cancelled"
+            | "cancelled()"
+            | "success"
+            | "success()"
+            | "failure"
+            | "failure()"
+    ) || expr.starts_with('!')
+        || expr.contains("==")
+        || expr.contains("!=")
+        || expr
+            .strip_prefix("startsWith(")
+            .and_then(|value| value.strip_suffix(')'))
+            .is_some()
+        || function_arg_any(expr, &["exists", "has", "is", "missing", "not", "arch"]).is_some()
+        || word_function_arg_any(expr, &["exists", "has", "missing", "arch"]).is_some()
+        || word_prefix_arg(expr, "is").is_some()
+        || word_prefix_arg(expr, "not").is_some()
 }
 
 fn condition_target_exists(

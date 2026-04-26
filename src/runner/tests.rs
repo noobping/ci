@@ -81,6 +81,8 @@ fn native_condition_shorthands_work() {
     assert!(evaluate_condition(Some("success"), &succeeded));
     assert!(!evaluate_condition(Some("failure"), &succeeded));
     assert!(evaluate_condition(Some("!failure"), &succeeded));
+    assert!(evaluate_condition(Some("is success"), &succeeded));
+    assert!(evaluate_condition(Some("not failure"), &succeeded));
 }
 
 #[test]
@@ -104,6 +106,7 @@ fn arch_conditions_match_selected_arch() {
     host_env.insert("CI_HOST_ARCH".to_string(), host_arch);
     let host_ctx = expr_ctx(temp.path(), &host_env, true, false);
     assert!(evaluate_condition(Some("arch(host)"), &host_ctx));
+    assert!(evaluate_condition(Some("arch host"), &host_ctx));
     assert!(evaluate_condition(Some("arch(host arch)"), &host_ctx));
     assert!(evaluate_condition(
         Some("arch(env.CI_HOST_ARCH)"),
@@ -151,6 +154,7 @@ fn exists_checks_repo_relative_files_and_env_paths() {
     let temp = TempDir::new().expect("tempdir");
     fs::create_dir_all(temp.path().join("target")).expect("create dir");
     fs::write(temp.path().join("marker.txt"), "ok").expect("write file");
+    fs::write(temp.path().join("host"), "ok").expect("write host file");
 
     let mut env = BTreeMap::new();
     env.insert("BUILD_DIR".to_string(), "target".to_string());
@@ -158,20 +162,35 @@ fn exists_checks_repo_relative_files_and_env_paths() {
 
     let ctx = expr_ctx(temp.path(), &env, true, false);
     assert!(evaluate_condition(Some("exists(target)"), &ctx));
+    assert!(evaluate_condition(Some("exists target"), &ctx));
     assert!(evaluate_condition(Some("exists(env.BUILD_DIR)"), &ctx));
     assert!(evaluate_condition(Some("exists(marker.txt)"), &ctx));
+    assert!(evaluate_condition(Some("is(host)"), &ctx));
+    assert!(evaluate_condition(Some("is host"), &ctx));
+    assert!(evaluate_condition(Some("is marker.txt"), &ctx));
     assert!(evaluate_condition(Some("exists(path:marker.txt)"), &ctx));
     assert!(evaluate_condition(Some("exists(path:env.BUILD_DIR)"), &ctx));
     assert!(evaluate_condition(Some("exists(file:marker.txt)"), &ctx));
     assert!(evaluate_condition(Some("has(file:marker.txt)"), &ctx));
+    assert!(evaluate_condition(Some("has file:marker.txt"), &ctx));
     assert!(evaluate_condition(Some("is(file:marker.txt)"), &ctx));
+    assert!(evaluate_condition(Some("is file:marker.txt"), &ctx));
     assert!(evaluate_condition(Some("is exists(file:marker.txt)"), &ctx));
+    assert!(evaluate_condition(Some("is exists file:marker.txt"), &ctx));
     assert!(evaluate_condition(Some("missing(file:target)"), &ctx));
+    assert!(evaluate_condition(Some("missing file:target"), &ctx));
     assert!(evaluate_condition(Some("not(file:target)"), &ctx));
+    assert!(evaluate_condition(Some("not file:target"), &ctx));
     assert!(evaluate_condition(Some("is missing(file:target)"), &ctx));
+    assert!(evaluate_condition(Some("is missing file:target"), &ctx));
     assert!(evaluate_condition(Some("not exists(file:target)"), &ctx));
+    assert!(evaluate_condition(Some("not exists file:target"), &ctx));
     assert!(evaluate_condition(
         Some("not missing(file:marker.txt)"),
+        &ctx
+    ));
+    assert!(evaluate_condition(
+        Some("not missing file:marker.txt"),
         &ctx
     ));
     assert!(evaluate_condition(Some("exists(dir:target)"), &ctx));
