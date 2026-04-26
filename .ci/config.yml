@@ -1,6 +1,5 @@
 install_mode: copy
 other_workflows: false
-silent: true
 container:
   arch:
     - x64
