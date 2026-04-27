@@ -102,6 +102,19 @@ fn unknown_command_rewrite_keeps_global_options_before_workflow() {
 }
 
 #[test]
+fn verbose_short_flags_count_extra_levels() {
+    let cli = Cli::try_parse_from(rewrite(["ci", "-vvv", "build"])).expect("parse");
+
+    assert_eq!(cli.global.verbose, 3);
+    assert!(matches!(cli.command, Commands::Run(_)));
+}
+
+#[test]
+fn silent_flag_is_not_supported() {
+    assert!(Cli::try_parse_from(rewrite(["ci", "--silent", "build"])).is_err());
+}
+
+#[test]
 fn repo_aliases_work_before_rewritten_workflow() {
     let cli = Cli::try_parse_from(rewrite(["ci", "--repository", "/tmp/project", "build"]))
         .expect("parse");

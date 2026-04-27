@@ -222,9 +222,32 @@ fn run_actions_run_step(
             })
             .or(execution.resolved.execution.workspace.as_deref()),
     );
+    ctx.output.verbose_at(
+        2,
+        format!(
+            "running action step `{}` with shell `{shell}` in {}",
+            step.name,
+            workdir.display()
+        ),
+    );
+    ctx.output.verbose_at(
+        3,
+        format!(
+            "action step `{}` environment contains {} variable(s)",
+            step.name,
+            merged.len()
+        ),
+    );
 
     if let Some(container) = execution.job.container.as_ref() {
         let platform = container_platform(execution.resolved, execution.arch);
+        ctx.output.verbose_at(
+            2,
+            format!(
+                "action step `{}` container image `{}` on {platform}",
+                step.name, container.image
+            ),
+        );
         execution
             .backend
             .ok_or_else(|| CiError::Message("container runtime was not initialised".to_string()))?

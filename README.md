@@ -57,11 +57,22 @@ Global output controls:
 
 ```sh
 ci --verbose build
+ci -vv build
+ci -vvv build
 ci --quiet build
-ci --silent build
 ```
 
-`--quiet` hides normal informational output. `--silent` hides informational output and warnings, leaving errors visible. Verbose, quiet, and silent modes are passed to supported runner-owned commands, such as Git. User-authored `run:` scripts are left exactly as written.
+`--verbose`/`-v` shows command traces; repeat it as `-vv` and `-vvv` for extra runner detail. `--quiet`/`-q` hides normal output, warnings, and workflow script output, but still shows critical errors. Verbose and quiet modes are passed to supported runner-owned commands, such as Git; quiet mode uses `--quiet` when supported and falls back to `--silent` for commands that use that spelling.
+
+Output levels:
+
+| Level | How to enable | Behavior |
+| --- | --- | --- |
+| Quiet | `-q`, `--quiet`, or `quiet: true` | Hides normal output, warnings, verbose logs, and workflow script output. Critical `ci` errors are still shown. |
+| Normal | default | Shows normal info, warnings, critical errors, and workflow script output. |
+| Verbose 1 | `-v`, `--verbose` | Adds command traces and runner verbose messages; asks supported runner-owned commands to be verbose. |
+| Verbose 2 | `-vv` | Adds runner detail such as Git execution mode, step shell/workdir, container image/platform, and package container build paths. |
+| Verbose 3+ | `-vvv` | Adds deeper detail such as Git working directory, environment variable counts, and generated container base/tag info. Higher levels currently behave like `-vvv`. |
 
 Configuration precedence is:
 
@@ -265,7 +276,7 @@ Optional config lives in:
 
 The same `.yaml` filenames are also accepted. Config is loaded in order from system, user, then project config, so project config wins. `--config path/to/file.yml` uses that file for normal config while still keeping system/user `policy` and `locked` sections.
 
-Supported defaults include shell, quiet output, silent output, fail-fast, tech stack, architecture, container settings, container runtime, git mode/command/image, default install mode, recursive checkout, default branch allowlist, artifact store, and actions cache. `quiet: true` hides info messages; `silent: true` hides info and warnings so only errors are shown. By default, `.github/workflows` and `.gitea/workflows` are discovered only in bare repositories; set `other_workflows: true` or `other_workflows: false` to override that while keeping native `.ci` workflows enabled.
+Supported defaults include shell, quiet output, fail-fast, tech stack, architecture, container settings, container runtime, git mode/command/image, default install mode, recursive checkout, default branch allowlist, artifact store, and actions cache. `quiet: true` hides normal output, warnings, and workflow script output, while still showing critical errors. By default, `.github/workflows` and `.gitea/workflows` are discovered only in bare repositories; set `other_workflows: true` or `other_workflows: false` to override that while keeping native `.ci` workflows enabled.
 
 Example:
 
@@ -558,7 +569,7 @@ Description=Run ci build for my-project
 [Service]
 Type=oneshot
 WorkingDirectory=%h/Projects/my-project
-ExecStart=%h/.local/bin/ci --silent run build
+ExecStart=%h/.local/bin/ci --quiet run build
 ```
 
 `~/.config/systemd/user/my-project-ci.timer`:
@@ -794,10 +805,10 @@ ci explain pre-push
 ci status
 ```
 
-Use `--verbose` for command traces, `--quiet` to hide info messages, and `--silent` for errors-only hooks or timers:
+Use `--verbose` for command traces, `-vv`/`-vvv` for extra runner detail, and `--quiet` for low-noise hooks or timers:
 
 ```sh
 ci --verbose build
-ci --quiet build
-ci --silent run --event pre-push build
+ci -vv build
+ci --quiet run --event pre-push build
 ```

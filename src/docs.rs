@@ -128,7 +128,21 @@ ci man -d ~/.local/share/man/man1
 CLI flags override workflow fields, workflow fields override workflow defaults, workflow defaults override project config, project config overrides user config, user config overrides system config, and config overrides auto-detection. Values under policy or locked are applied after normal config and CLI flags; system policy is strongest, then user policy, then project policy.
 --config replaces normal config discovery but keeps system and user policy/locked sections.
 .SH OUTPUT
---quiet hides informational output. --silent hides informational output and warnings, leaving errors visible. They are separate modes; --silent is useful for hooks and timers that should only report failures.
+--verbose or -v shows command traces. Repeat it as -vv and -vvv for extra runner detail.
+--quiet or -q hides normal output, warnings, and workflow script output, while still showing critical errors.
+Quiet mode passes --quiet to supported runner-owned commands, and falls back to --silent for commands that use that spelling.
+.P
+Output levels:
+.IP "Quiet"
+Enabled by -q, --quiet, or quiet: true. Hides normal output, warnings, verbose logs, and workflow script output. Critical ci errors are still shown.
+.IP "Normal"
+The default. Shows normal info, warnings, critical errors, and workflow script output.
+.IP "Verbose 1"
+Enabled by -v or --verbose. Adds command traces and runner verbose messages; asks supported runner-owned commands to be verbose.
+.IP "Verbose 2"
+Enabled by -vv. Adds runner detail such as Git execution mode, step shell/workdir, container image/platform, and package container build paths.
+.IP "Verbose 3+"
+Enabled by -vvv. Adds deeper detail such as Git working directory, environment variable counts, and generated container base/tag info. Higher levels currently behave like -vvv.
 .SH GIT
 git_mode accepts auto, host, flatpak, custom, or alias. auto detects Flatpak and uses flatpak-spawn --host git when available, then falls back to host git or the configured Git container image. custom requires git_command; git_command may be a command string or YAML list. container_runtime auto prefers podman, then flatpak-spawn --host podman inside Flatpak, then docker.
 .SH BUILD ARGUMENTS
@@ -181,7 +195,7 @@ steps:
 Step-level packages and Rust components build a generated image for that step, using the step image as the base image. Set container: false on a step to run it on the host. ci run --no-container disables workflow and step containers for native YAML workflows.
 .SH SETTINGS EXAMPLE
 .EX
-silent: true
+quiet: true
 tech: rust
 arch: [x64, arm64]
 container:
@@ -205,7 +219,7 @@ RUN cargo build --release
 [Service]
 Type=oneshot
 WorkingDirectory=%h/Projects/my-project
-ExecStart=%h/.local/bin/ci --silent run build
+ExecStart=%h/.local/bin/ci --quiet run build
 .EE
 "#,
         ),

@@ -155,7 +155,7 @@ steps:
 }
 
 #[test]
-fn quiet_config_hides_info_but_keeps_step_effects() {
+fn quiet_config_hides_all_output_but_keeps_step_effects() {
     let repo = TestRepo::new();
     repo.write(".ci/config.yml", "quiet: true\n");
     repo.write(
@@ -164,7 +164,10 @@ fn quiet_config_hides_info_but_keeps_step_effects() {
 on: [manual]
 steps:
   - name: quiet step
-    run: printf quiet > quiet.txt
+    run: |
+      printf quiet > quiet.txt
+      printf stdout
+      printf stderr >&2
 "#,
     );
 
@@ -173,7 +176,26 @@ steps:
     let output = assert_success(output(command));
 
     assert_eq!(repo.read("quiet.txt"), "quiet");
-    assert!(!stdout(&output).contains("INFO"));
+    assert!(stdout(&output).is_empty());
+    assert!(stderr(&output).is_empty());
+}
+
+#[test]
+fn quiet_cli_shows_critical_errors_but_hides_parse_errors() {
+    let repo = TestRepo::new();
+    repo.write(".ci/config.yml", "defaults:\n  contaner:\n    type: rust\n");
+
+    let mut critical = repo.ci();
+    critical.args(["-q", "status"]);
+    let critical = assert_failure(output(critical), 2);
+    assert!(stdout(&critical).is_empty());
+    assert!(stderr(&critical).contains("unknown key `contaner`"));
+
+    let mut parse_error = repo.ci();
+    parse_error.args(["-q", "--definitely-not-a-ci-option"]);
+    let parse_error = assert_failure(output(parse_error), 2);
+    assert!(stdout(&parse_error).is_empty());
+    assert!(stderr(&parse_error).is_empty());
 }
 
 #[test]

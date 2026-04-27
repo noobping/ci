@@ -82,6 +82,21 @@ pub(crate) fn prepare_native_container_image(
         &file,
         generated_native_containerfile(&base_image, &resolved.container.packages, &components),
     )?;
+    ctx.output.verbose_at(
+        2,
+        format!(
+            "building workflow `{}` package container from {}",
+            resolved.name,
+            file.display()
+        ),
+    );
+    ctx.output.verbose_at(
+        3,
+        format!(
+            "workflow `{}` package container base `{base_image}` tagged `{image_name}`",
+            resolved.name
+        ),
+    );
     let build_status = backend.build(&file, &dir, &image_name, Some(platform))?;
     Ok(PreparedNativeContainerImage {
         image: image_name,

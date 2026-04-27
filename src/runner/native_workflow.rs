@@ -201,6 +201,29 @@ pub(crate) fn run_native_yaml(
                     .map(Path::new)
                     .or(resolved.execution.workspace.as_deref()),
             );
+            ctx.output.verbose_at(
+                2,
+                format!(
+                    "running step `{step_name}` with shell `{shell}` in {}",
+                    workdir.display()
+                ),
+            );
+            ctx.output.verbose_at(
+                3,
+                format!(
+                    "step `{step_name}` environment contains {} variable(s)",
+                    condition_env.len()
+                ),
+            );
+            if let Some(container) = &step_container {
+                ctx.output.verbose_at(
+                    2,
+                    format!(
+                        "step `{step_name}` container image `{}` on {}",
+                        container.image, container.platform
+                    ),
+                );
+            }
             if let Some(container) = step_container {
                 if container.build_status != 0 {
                     container.build_status

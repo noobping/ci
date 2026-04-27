@@ -200,28 +200,28 @@ impl GitService {
     }
 
     fn run_git(&self, dir: &Path, args: &[&str]) -> Result<Output> {
-        let args = git_args_for_verbosity(
-            args,
-            self.output.is_verbose(),
-            self.output.is_quiet_or_silent(),
-        );
+        let args = git_args_for_verbosity(args, self.output.is_verbose(), self.output.is_quiet());
         self.output.verbose(format!("git {}", args.join(" ")));
-        match self.execution_mode(dir) {
-            Ok(ExecutionMode::Custom(command)) => self.run_git_command(dir, &command, &args),
-            Ok(ExecutionMode::FlatpakHost) => Command::new("flatpak-spawn")
+        let mode = self.execution_mode(dir)?;
+        self.output
+            .verbose_at(2, format!("git execution mode: {}", mode.description()));
+        self.output
+            .verbose_at(3, format!("git working directory: {}", dir.display()));
+        match mode {
+            ExecutionMode::Custom(command) => self.run_git_command(dir, &command, &args),
+            ExecutionMode::FlatpakHost => Command::new("flatpak-spawn")
                 .arg("--host")
                 .arg("git")
                 .current_dir(dir)
                 .args(&args)
                 .output()
                 .map_err(Into::into),
-            Ok(ExecutionMode::Host) => Command::new("git")
+            ExecutionMode::Host => Command::new("git")
                 .current_dir(dir)
                 .args(&args)
                 .output()
                 .map_err(Into::into),
-            Ok(ExecutionMode::Container(runtime)) => self.run_git_container(&runtime, dir, &args),
-            Err(err) => Err(err),
+            ExecutionMode::Container(runtime) => self.run_git_container(&runtime, dir, &args),
         }
     }
 
@@ -329,26 +329,13 @@ fn git_args_for_verbosity<'a>(args: &'a [&'a str], verbose: bool, quiet: bool) -
     }
 
     if quiet {
-        let supports_quiet = matches!(
-            command,
-            "checkout"
-                | "clean"
-                | "clone"
-                | "commit"
-                | "fetch"
-                | "pull"
-                | "push"
-                | "reset"
-                | "restore"
-                | "submodule"
-        );
-        if !supports_quiet {
+        let Some(quiet_flag) = quiet_flag_for_command(command) else {
             return args.to_vec();
-        }
+        };
 
         let mut quiet_args = Vec::with_capacity(args.len() + 1);
         quiet_args.push(command);
-        quiet_args.push("--quiet");
+        quiet_args.push(quiet_flag);
         quiet_args.extend_from_slice(&args[1..]);
         return quiet_args;
     }
@@ -356,8 +343,40 @@ fn git_args_for_verbosity<'a>(args: &'a [&'a str], verbose: bool, quiet: bool) -
     args.to_vec()
 }
 
+fn quiet_flag_for_command(command: &str) -> Option<&'static str> {
+    if supports_quiet(command) {
+        Some("--quiet")
+    } else if supports_no_quiet_or_silent(command) {
+        None
+    } else {
+        Some("--silent")
+    }
+}
+
+fn supports_quiet(command: &str) -> bool {
+    matches!(
+        command,
+        "add"
+            | "checkout"
+            | "clean"
+            | "clone"
+            | "commit"
+            | "fetch"
+            | "pull"
+            | "push"
+            | "reset"
+            | "restore"
+            | "submodule"
+    )
+}
+
+fn supports_no_quiet_or_silent(command: &str) -> bool {
+    matches!(command, "rev-parse" | "status")
+}
+
 fn has_quiet_arg(args: &[&str]) -> bool {
-    args.iter().any(|arg| matches!(*arg, "-q" | "--quiet"))
+    args.iter()
+        .any(|arg| matches!(*arg, "-q" | "--quiet" | "--silent"))
 }
 
 fn has_verbose_arg(args: &[&str]) -> bool {
@@ -370,6 +389,17 @@ enum ExecutionMode {
     FlatpakHost,
     Host,
     Container(String),
+}
+
+impl ExecutionMode {
+    fn description(&self) -> String {
+        match self {
+            Self::Custom(command) => format!("custom `{}`", command.render()),
+            Self::FlatpakHost => "flatpak host".to_string(),
+            Self::Host => "host".to_string(),
+            Self::Container(runtime) => format!("container via {runtime}"),
+        }
+    }
 }
 
 fn running_in_flatpak() -> bool {

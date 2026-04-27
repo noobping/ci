@@ -12,7 +12,6 @@ fn globals() -> GlobalOptions {
     GlobalOptions {
         verbose: 0,
         quiet: false,
-        silent: false,
         repo: PathBuf::from("."),
         ci_dir: PathBuf::from(".ci"),
         config: None,
@@ -28,34 +27,35 @@ fn globals() -> GlobalOptions {
 }
 
 #[test]
-fn verbose_overrides_silent() {
+fn verbose_overrides_quiet() {
     let mut global = globals();
     global.verbose = 1;
-    global.silent = true;
+    global.quiet = true;
 
     assert_eq!(
         Output::from_globals(&global).verbosity(),
         Verbosity::Verbose(1)
     );
     assert!(Output::from_globals(&global).is_verbose());
+    assert_eq!(Output::from_globals(&global).verbose_level(), 1);
 }
 
 #[test]
-fn config_can_enable_silent_by_default() {
-    let global = globals();
-    let defaults = defaults(false, true);
+fn extra_verbose_levels_are_preserved() {
+    let mut global = globals();
+    global.verbose = 3;
 
     assert_eq!(
-        Output::from_settings(&global, Some(&defaults)).verbosity(),
-        Verbosity::Silent
+        Output::from_globals(&global).verbosity(),
+        Verbosity::Verbose(3)
     );
-    assert!(!Output::from_settings(&global, Some(&defaults)).is_verbose());
+    assert_eq!(Output::from_globals(&global).verbose_level(), 3);
 }
 
 #[test]
 fn config_can_enable_quiet_by_default() {
     let global = globals();
-    let defaults = defaults(true, false);
+    let defaults = defaults(true);
 
     assert_eq!(
         Output::from_settings(&global, Some(&defaults)).verbosity(),
@@ -64,22 +64,19 @@ fn config_can_enable_quiet_by_default() {
 }
 
 #[test]
-fn cli_silent_overrides_config_quiet() {
+fn cli_quiet_enables_quiet_output() {
     let mut global = globals();
-    global.silent = true;
-    let defaults = defaults(true, false);
+    global.quiet = true;
 
-    assert_eq!(
-        Output::from_settings(&global, Some(&defaults)).verbosity(),
-        Verbosity::Silent
-    );
+    assert_eq!(Output::from_globals(&global).verbosity(), Verbosity::Quiet);
+    assert!(Output::from_globals(&global).is_quiet());
 }
 
 #[test]
-fn verbose_overrides_config_silent() {
+fn verbose_overrides_config_quiet() {
     let mut global = globals();
     global.verbose = 1;
-    let defaults = defaults(false, true);
+    let defaults = defaults(true);
 
     assert_eq!(
         Output::from_settings(&global, Some(&defaults)).verbosity(),
@@ -88,26 +85,10 @@ fn verbose_overrides_config_silent() {
 }
 
 #[test]
-fn policy_silent_overrides_verbose() {
-    let mut global = globals();
-    global.verbose = 1;
-    let defaults = defaults(false, false);
-    let policy = DefaultsConfig {
-        silent: Some(true),
-        ..DefaultsConfig::default()
-    };
-
-    assert_eq!(
-        Output::from_settings_with_policy(&global, Some(&defaults), Some(&policy)).verbosity(),
-        Verbosity::Silent
-    );
-}
-
-#[test]
 fn policy_quiet_overrides_verbose() {
     let mut global = globals();
     global.verbose = 1;
-    let defaults = defaults(false, false);
+    let defaults = defaults(false);
     let policy = DefaultsConfig {
         quiet: Some(true),
         ..DefaultsConfig::default()
@@ -119,11 +100,25 @@ fn policy_quiet_overrides_verbose() {
     );
 }
 
-fn defaults(quiet: bool, silent: bool) -> Defaults {
+#[test]
+fn policy_quiet_false_disables_quiet_default() {
+    let global = globals();
+    let defaults = defaults(true);
+    let policy = DefaultsConfig {
+        quiet: Some(false),
+        ..DefaultsConfig::default()
+    };
+
+    assert_eq!(
+        Output::from_settings_with_policy(&global, Some(&defaults), Some(&policy)).verbosity(),
+        Verbosity::Normal
+    );
+}
+
+fn defaults(quiet: bool) -> Defaults {
     Defaults {
         shell: "/bin/sh".to_string(),
         quiet,
-        silent,
         fail_fast: true,
         arch: vec![Architecture::host()],
         container: ContainerConfig::default(),

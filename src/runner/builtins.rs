@@ -264,7 +264,7 @@ fn run_clean_step(
         .map(|value| parse_bool(value))
         .unwrap_or(false)
     {
-        let command = if ctx.output.is_quiet_or_silent() {
+        let command = if ctx.output.is_quiet() {
             "cargo clean --quiet"
         } else {
             "cargo clean"

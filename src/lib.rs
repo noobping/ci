@@ -24,14 +24,26 @@ use clap::Parser;
 use crate::cli::{Cli, Commands};
 use crate::error::Result;
 use crate::git::GitService;
-use crate::output::Output;
+use crate::output::{mute_process_output, Output};
 use crate::repo::RepoInfo;
 use crate::runner::AppContext;
 
 pub fn entrypoint(argv: Vec<std::ffi::OsString>) -> i32 {
     let doctor_alias = cli::doctor_alias_used(&argv);
-    let cli = Cli::parse_from(cli::rewrite_argv(argv));
+    let quiet_requested = argv_requests_quiet(&argv);
+    let cli = match Cli::try_parse_from(cli::rewrite_argv(argv)) {
+        Ok(cli) => cli,
+        Err(err) => {
+            if !quiet_requested {
+                let _ = err.print();
+            }
+            return err.exit_code();
+        }
+    };
     let bootstrap_output = Output::from_globals(&cli.global);
+    if bootstrap_output.is_quiet() {
+        mute_process_output();
+    }
 
     match run(cli, doctor_alias, bootstrap_output.clone()) {
         Ok(code) => code,
@@ -62,6 +74,9 @@ fn run(cli: Cli, doctor_alias: bool, bootstrap_output: Output) -> Result<i32> {
         Some(&config.defaults),
         Some(&config.policy),
     );
+    if output.is_quiet() {
+        mute_process_output();
+    }
 
     if doctor_alias {
         output.warn("`doctor` is deprecated; use `status`");
@@ -90,4 +105,27 @@ fn run(cli: Cli, doctor_alias: bool, bootstrap_output: Output) -> Result<i32> {
         Commands::SelfCmd(args) => runner::cmd_self(&ctx, &args),
         Commands::Other(args) => runner::cmd_other(&ctx, &args),
     }
+}
+
+fn argv_requests_quiet(argv: &[std::ffi::OsString]) -> bool {
+    for arg in argv.iter().skip(1) {
+        let Some(arg) = arg.to_str() else {
+            continue;
+        };
+        if arg == "--" {
+            return false;
+        }
+        if arg == "--quiet" || arg.starts_with("--quiet=") {
+            return true;
+        }
+        if let Some(shorts) = arg
+            .strip_prefix('-')
+            .filter(|value| !value.starts_with('-'))
+        {
+            if shorts.contains('q') {
+                return true;
+            }
+        }
+    }
+    false
 }

@@ -101,7 +101,6 @@ pub struct WorkflowOverride {
 pub struct DefaultsConfig {
     pub shell: Option<String>,
     pub quiet: Option<bool>,
-    pub silent: Option<bool>,
     #[serde(alias = "fail-fast")]
     pub fail_fast: Option<bool>,
     #[serde(
@@ -168,7 +167,6 @@ pub struct ConfigFile {
 pub struct Defaults {
     pub shell: String,
     pub quiet: bool,
-    pub silent: bool,
     pub fail_fast: bool,
     pub arch: Vec<Architecture>,
     pub container: ContainerConfig,
@@ -226,7 +224,6 @@ impl ResolvedConfig {
                 .clone()
                 .unwrap_or_else(|| "/bin/sh".to_string()),
             quiet: effective_defaults.quiet.unwrap_or(false),
-            silent: effective_defaults.silent.unwrap_or(false),
             fail_fast: effective_defaults.fail_fast.unwrap_or(true),
             arch: selected_arches_with_policy(
                 &global.arch,
@@ -467,7 +464,6 @@ impl DefaultsConfig {
     fn is_empty(&self) -> bool {
         self.shell.is_none()
             && self.quiet.is_none()
-            && self.silent.is_none()
             && self.fail_fast.is_none()
             && self.tech_stack.is_none()
             && self.arch.is_empty()
@@ -488,7 +484,6 @@ impl DefaultsConfig {
         Self {
             shell: other.shell.clone().or_else(|| self.shell.clone()),
             quiet: other.quiet.or(self.quiet),
-            silent: other.silent.or(self.silent),
             fail_fast: other.fail_fast.or(self.fail_fast),
             tech_stack: other.tech_stack.or(self.tech_stack),
             arch: self.arch.merged(&other.arch),

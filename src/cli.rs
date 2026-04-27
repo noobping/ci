@@ -29,7 +29,7 @@ pub struct GlobalOptions {
         long = "verbose",
         action = ArgAction::Count,
         global = true,
-        help = "Increase output detail; repeat for more verbosity"
+        help = "Increase output detail; repeat up to -vvv for extra runner detail"
     )]
     pub verbose: u8,
 
@@ -37,16 +37,9 @@ pub struct GlobalOptions {
         short = 'q',
         long = "quiet",
         global = true,
-        help = "Reduce normal output"
+        help = "Hide non-error output"
     )]
     pub quiet: bool,
-
-    #[arg(
-        long = "silent",
-        global = true,
-        help = "Hide normal and warning output; errors are still shown"
-    )]
-    pub silent: bool,
 
     #[arg(
         long = "repo",

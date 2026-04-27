@@ -41,7 +41,6 @@ pub(crate) fn config_schema() -> serde_json::Value {
             "other-workflows": { "type": "boolean" },
             "shell": { "type": "string" },
             "quiet": { "type": "boolean" },
-            "silent": { "type": "boolean" },
             "fail_fast": { "type": "boolean" },
             "fail-fast": { "type": "boolean" },
             "tech": tech_schema(),
@@ -110,7 +109,6 @@ fn defaults_schema() -> serde_json::Value {
         "properties": {
             "shell": { "type": "string" },
             "quiet": { "type": "boolean" },
-            "silent": { "type": "boolean" },
             "fail_fast": { "type": "boolean" },
             "fail-fast": { "type": "boolean" },
             "tech": tech_schema(),

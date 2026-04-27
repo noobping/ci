@@ -141,19 +141,18 @@ type: golang
 }
 
 #[test]
-fn quiet_default_merges_like_silent_default() {
+fn quiet_default_merges_from_root_and_defaults() {
     let file: ConfigFile = serde_yaml::from_str(
         r#"
 quiet: true
 defaults:
-  silent: true
+  quiet: false
 "#,
     )
-    .expect("parse quiet and silent defaults");
+    .expect("parse quiet defaults");
     let defaults = file.root_defaults.merge(&file.defaults);
 
-    assert_eq!(defaults.quiet, Some(true));
-    assert_eq!(defaults.silent, Some(true));
+    assert_eq!(defaults.quiet, Some(false));
 }
 
 #[test]
@@ -295,6 +294,11 @@ defaults:
         .expect_err("unknown key should be rejected");
 
     assert!(err.to_string().contains("unknown key `contaner`"));
+
+    let value: Value = serde_yaml::from_str("silent: true\n").expect("parse yaml value");
+    let err = validate_config_keys(&value, Path::new(".ci/config.yml"))
+        .expect_err("silent key should be rejected");
+    assert!(err.to_string().contains("unknown key `silent`"));
 }
 
 #[test]

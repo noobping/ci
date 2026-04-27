@@ -107,7 +107,6 @@ fn mapping_entries<'a>(
 const ROOT_CONFIG_KEYS: &[&str] = &[
     "shell",
     "quiet",
-    "silent",
     "fail_fast",
     "fail-fast",
     "tech",
@@ -146,7 +145,6 @@ const ROOT_CONFIG_KEYS: &[&str] = &[
 const DEFAULT_KEYS: &[&str] = &[
     "shell",
     "quiet",
-    "silent",
     "fail_fast",
     "fail-fast",
     "tech",
