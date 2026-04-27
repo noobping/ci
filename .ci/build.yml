@@ -1,7 +1,6 @@
 name: build
 on:
   - manual
-  - pre-push
 needs: check
 tech: rust
 
