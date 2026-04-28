@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 
 use crate::artifacts::ArtifactSession;
 use crate::conditions::{interpolate_expressions, ExpressionContext};
+use crate::config::ContainerRuntime;
+use crate::containers::{sh_single_quote, ContainerBackend};
 use crate::error::{CiError, Result};
 use crate::runner::AppContext;
 
@@ -22,6 +24,7 @@ pub(crate) struct BuiltinStepInvocation<'a, 'b> {
     pub(crate) inline_run: Option<String>,
     pub(crate) shell: Option<String>,
     pub(crate) workdir: Option<PathBuf>,
+    pub(crate) container_runtime: ContainerRuntime,
     pub(crate) expr: &'b ExpressionContext<'b>,
 }
 
@@ -54,6 +57,7 @@ const EXPORT_ACTION_NAMES: &[&str] = &[
 const LINK_ACTION_NAMES: &[&str] = &["link", "ci/link", "symlink", "ci/symlink"];
 const COMMIT_ACTION_NAMES: &[&str] = &["commit", "ci/commit"];
 const SYNC_ACTION_NAMES: &[&str] = &["sync", "ci/sync"];
+const PODMAN_ACTION_NAMES: &[&str] = &["podman", "ci/podman", "docker", "ci/docker"];
 const COMMIT_PATH_INPUT_KEYS: &[&str] = &[
     "path", "paths", "file", "files", "pattern", "patterns", "source", "sources", "src", "srcs",
     "from", "froms",
@@ -161,6 +165,11 @@ pub(crate) fn run_builtin_step(
             ctx.output
                 .verbose(format!("running built-in action `{}`", invocation.uses));
             Ok(Some(run_sync_step(ctx, &rendered_with)?))
+        }
+        name if PODMAN_ACTION_NAMES.contains(&name) => {
+            ctx.output
+                .verbose(format!("running built-in action `{}`", invocation.uses));
+            Ok(Some(run_podman_step(ctx, invocation, &rendered_with)?))
         }
         "clean" | "ci/clean" => {
             ctx.output
@@ -298,6 +307,210 @@ fn run_clean_step(
     }
 
     Ok(0)
+}
+
+fn run_podman_step(
+    ctx: &AppContext,
+    invocation: &BuiltinStepInvocation<'_, '_>,
+    rendered_with: &BTreeMap<String, String>,
+) -> Result<i32> {
+    let shell = invocation
+        .shell
+        .as_deref()
+        .unwrap_or(&ctx.config.defaults.shell);
+    if !shell_looks_like_bash(shell) {
+        return Err(CiError::Usage(
+            "podman action requires a bash-compatible shell; set `execution.shell: bash`"
+                .to_string(),
+        ));
+    }
+
+    let backend = ContainerBackend::detect(invocation.container_runtime)?;
+    let script = invocation
+        .inline_run
+        .as_deref()
+        .map(|script| interpolate_expressions(script, invocation.expr))
+        .or_else(|| {
+            input_value(rendered_with, &["args", "arg", "command", "cmd"])
+                .map(|args| format!("podman {args}"))
+        })
+        .ok_or_else(|| {
+            CiError::Usage("podman action requires inline `run` or `with.args`".to_string())
+        })?;
+    let wrapped = format!("{}\n{}", podman_shell_prelude(&backend), script);
+    let workdir = invocation
+        .workdir
+        .as_deref()
+        .unwrap_or(invocation.expr.root);
+    run_shell(shell, &wrapped, workdir, invocation.expr.env)
+}
+
+fn shell_looks_like_bash(shell: &str) -> bool {
+    shell
+        .split_whitespace()
+        .next()
+        .and_then(|value| Path::new(value).file_name())
+        .and_then(|value| value.to_str())
+        .map(|value| value == "bash" || value == "env")
+        .unwrap_or(false)
+        || shell.contains("bash")
+}
+
+fn podman_shell_prelude(backend: &ContainerBackend) -> String {
+    let command = backend
+        .command_tokens()
+        .iter()
+        .map(|part| sh_single_quote(part))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let runtime = backend.runtime_name();
+    format!(
+        r#"__ci_container_runtime={runtime}
+__ci_container_command=({command})
+
+__ci_strip_selinux_volume_label() {{
+  local spec="$1"
+  if [[ "$__ci_container_runtime" != docker || "$spec" != *:*:* ]]; then
+    printf '%s' "$spec"
+    return
+  fi
+
+  local prefix="${{spec%:*}}"
+  local opts="${{spec##*:}}"
+  local out=()
+  local opt
+  IFS=',' read -ra __ci_volume_opts <<< "$opts"
+  for opt in "${{__ci_volume_opts[@]}}"; do
+    case "$opt" in
+      z|Z|label=*|relabel=*) ;;
+      *) out+=("$opt") ;;
+    esac
+  done
+
+  if ((${{#out[@]}} == 0)); then
+    printf '%s' "$prefix"
+  else
+    local joined="${{out[0]}}"
+    local index
+    for ((index = 1; index < ${{#out[@]}}; index++)); do
+      joined="${{joined}},${{out[$index]}}"
+    done
+    printf '%s:%s' "$prefix" "$joined"
+  fi
+}}
+
+__ci_strip_docker_transport() {{
+  local value="$1"
+  if [[ "$__ci_container_runtime" == docker && "$value" == docker://* ]]; then
+    printf '%s' "${{value#docker://}}"
+  else
+    printf '%s' "$value"
+  fi
+}}
+
+__ci_podman_compat() {{
+  local args=()
+  while (($#)); do
+    case "$1" in
+      -v|--volume)
+        args+=("$1")
+        shift
+        if (($#)); then
+          args+=("$(__ci_strip_selinux_volume_label "$1")")
+          shift
+        fi
+        ;;
+      -v=*|--volume=*)
+        args+=("${{1%%=*}}=$(__ci_strip_selinux_volume_label "${{1#*=}}")")
+        shift
+        ;;
+      --mount)
+        args+=("$1")
+        shift
+        if (($#)); then
+          args+=("${{1//,relabel=private/}}")
+          args[-1]="${{args[-1]//,relabel=shared/}}"
+          shift
+        fi
+        ;;
+      --mount=*)
+        local mount_value="${{1#*=}}"
+        mount_value="${{mount_value//,relabel=private/}}"
+        mount_value="${{mount_value//,relabel=shared/}}"
+        args+=("--mount=$mount_value")
+        shift
+        ;;
+      --userns=keep-id)
+        if [[ "$__ci_container_runtime" != docker ]]; then
+          args+=("$1")
+        fi
+        shift
+        ;;
+      --userns)
+        if [[ "$__ci_container_runtime" == docker && "${{2:-}}" == keep-id ]]; then
+          shift 2
+        else
+          args+=("$1")
+          shift
+          if (($#)); then
+            args+=("$1")
+            shift
+          fi
+        fi
+        ;;
+      --tls-verify|--tls-verify=true|--tls-verify=false)
+        if [[ "$__ci_container_runtime" != docker ]]; then
+          args+=("$1")
+        fi
+        shift
+        ;;
+      --tls-verify=*)
+        if [[ "$__ci_container_runtime" != docker ]]; then
+          args+=("$1")
+        fi
+        shift
+        ;;
+      --security-opt=label=*)
+        if [[ "$__ci_container_runtime" != docker ]]; then
+          args+=("$1")
+        fi
+        shift
+        ;;
+      --security-opt)
+        if [[ "$__ci_container_runtime" == docker && "${{2:-}}" == label=* ]]; then
+          shift 2
+        else
+          args+=("$1")
+          shift
+          if (($#)); then
+            args+=("$1")
+            shift
+          fi
+        fi
+        ;;
+      docker://*)
+        args+=("$(__ci_strip_docker_transport "$1")")
+        shift
+        ;;
+      *)
+        args+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  command "${{__ci_container_command[@]}}" "${{args[@]}}"
+}}
+
+podman() {{
+  __ci_podman_compat "$@"
+}}
+
+docker() {{
+  __ci_podman_compat "$@"
+}}
+"#
+    )
 }
 
 fn run_commit_step(ctx: &AppContext, rendered_with: &BTreeMap<String, String>) -> Result<i32> {

@@ -176,6 +176,7 @@ pub(crate) fn run_native_yaml(
         let status = if step.uses.is_some() {
             run_native_uses_step(
                 ctx,
+                invocation.container_runtime,
                 resolved,
                 step,
                 &expr,
@@ -568,6 +569,7 @@ fn step_container_file_stem(
 
 fn run_native_uses_step(
     ctx: &AppContext,
+    container_runtime: crate::config::ContainerRuntime,
     resolved: &ResolvedWorkflow,
     step: &NativeStep,
     expr: &ExpressionContext<'_>,
@@ -612,6 +614,7 @@ fn run_native_uses_step(
                 .map(Path::new)
                 .or(resolved.execution.workspace.as_deref()),
         )),
+        container_runtime,
         expr,
     };
     let mut state = BuiltinStepState {

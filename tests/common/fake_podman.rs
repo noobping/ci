@@ -3,12 +3,20 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 pub fn make_fake_podman(dir: &Path) -> PathBuf {
+    make_fake_container_runtime(dir, "podman")
+}
+
+pub fn make_fake_docker(dir: &Path) -> PathBuf {
+    make_fake_container_runtime(dir, "docker")
+}
+
+fn make_fake_container_runtime(dir: &Path, name: &str) -> PathBuf {
     let bin_dir = dir.join("bin");
     fs::create_dir_all(&bin_dir).expect("create fake bin dir");
-    let log = dir.join("podman.log");
-    let podman = bin_dir.join("podman");
+    let log = dir.join(format!("{name}.log"));
+    let runtime = bin_dir.join(name);
     fs::write(
-        &podman,
+        &runtime,
         format!(
             r#"#!/bin/sh
 set -eu
@@ -82,12 +90,12 @@ exit 0
             shell_quote(&log)
         ),
     )
-    .expect("write fake podman");
-    let mut permissions = fs::metadata(&podman)
-        .expect("fake podman metadata")
+    .expect("write fake container runtime");
+    let mut permissions = fs::metadata(&runtime)
+        .expect("fake container runtime metadata")
         .permissions();
     permissions.set_mode(0o755);
-    fs::set_permissions(&podman, permissions).expect("make fake podman executable");
+    fs::set_permissions(&runtime, permissions).expect("make fake container runtime executable");
     bin_dir
 }
 

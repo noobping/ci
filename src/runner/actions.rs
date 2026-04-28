@@ -5,7 +5,7 @@ use std::process::{Command, Stdio};
 use crate::actions::{ActionRunStep, ActionStep, ActionUsesStep, ActionsJob, ActionsWorkflow};
 use crate::artifacts::ArtifactSession;
 use crate::conditions::{evaluate_condition, interpolate_expressions, ExpressionContext};
-use crate::config::Architecture;
+use crate::config::{Architecture, ContainerRuntime};
 use crate::containers::{container_platform, ContainerBackend, ContainerShellSpec};
 use crate::error::{CiError, Result};
 use crate::git::{command_exists, sanitize_component};
@@ -32,6 +32,7 @@ struct ActionsJobExecution<'a> {
     job: &'a ActionsJob,
     arch: &'a Architecture,
     matrix: &'a BTreeMap<String, String>,
+    container_runtime: ContainerRuntime,
     base_env: &'a BTreeMap<String, String>,
     backend: Option<&'a ContainerBackend>,
     artifacts: &'a mut ArtifactSession,
@@ -100,6 +101,7 @@ pub(crate) fn run_actions_workflow(
                 job: &job,
                 arch: &invocation.arch,
                 matrix: &matrix,
+                container_runtime: invocation.container_runtime,
                 base_env,
                 backend: backend.as_ref(),
                 artifacts,
@@ -350,6 +352,7 @@ fn run_actions_uses_step(
                 })
                 .or(execution.resolved.execution.workspace.as_deref()),
         )),
+        container_runtime: execution.container_runtime,
         expr: &expr,
     };
     let mut state = BuiltinStepState {

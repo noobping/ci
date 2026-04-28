@@ -193,6 +193,16 @@ steps:
     run: tool check
 .EE
 Step-level packages and Rust components build a generated image for that step, using the step image as the base image. Set container: false on a step to run it on the host. ci run --no-container disables workflow and step containers for native YAML workflows.
+.SH PODMAN ACTION EXAMPLE
+.EX
+steps:
+  - name: Run Butane
+    use: podman
+    shell: bash
+    run: |
+      podman run --rm -v "$PWD:/work:Z" -w /work quay.io/coreos/butane:release --help
+.EE
+The podman action runs an inline Bash script with a podman function backed by the selected container runtime. With Docker, Podman SELinux relabel volume options such as :Z and :z are ignored.
 .SH SETTINGS EXAMPLE
 .EX
 quiet: true

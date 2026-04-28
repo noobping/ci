@@ -111,6 +111,14 @@ impl ContainerBackend {
         command
     }
 
+    pub(crate) fn command_tokens(&self) -> &[String] {
+        &self.command
+    }
+
+    pub(crate) fn runtime_name(&self) -> &'static str {
+        self.runtime.as_str()
+    }
+
     fn render_runtime(&self) -> String {
         self.command.join(" ")
     }

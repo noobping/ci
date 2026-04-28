@@ -4,8 +4,8 @@ use tempfile::TempDir;
 
 use common::assertions::{assert_failure, assert_success, output, stderr};
 use common::fake_podman::{
-    make_fake_flatpak_spawn, make_fake_podman, make_fake_shell, path_with_fake_bin,
-    path_with_fake_bins,
+    make_fake_docker, make_fake_flatpak_spawn, make_fake_podman, make_fake_shell,
+    path_with_fake_bin, path_with_fake_bins,
 };
 use common::repo::TestRepo;
 
@@ -73,6 +73,77 @@ steps:
     assert!(log.contains("/tmp:/tmp/ci-extra"));
     assert!(log.contains("/usr/local/cargo/registry"));
     assert!(log.contains("/usr/local/cargo/git"));
+}
+
+#[test]
+fn podman_action_runs_through_docker_and_strips_selinux_volume_labels() {
+    let repo = TestRepo::new();
+    let fake = TempDir::new().expect("fake docker dir");
+    let fake_bin = make_fake_docker(fake.path());
+    repo.write(
+        ".ci/build.yml",
+        r#"
+on: [manual]
+execution:
+  shell: bash
+steps:
+  - name: podman compat
+    use: podman
+    run: |
+      podman run --rm -v "$PWD:/work:Z" -w /work fake-image /bin/sh -c 'printf docker > out.txt'
+"#,
+    );
+
+    let mut command = repo.ci();
+    command.env("PATH", path_with_fake_bin(&fake_bin)).args([
+        "run",
+        "--container-runtime",
+        "docker",
+        "build",
+    ]);
+    assert_success(output(command));
+
+    assert_eq!(repo.read("out.txt"), "docker");
+    let log = std::fs::read_to_string(fake.path().join("docker.log")).expect("read docker log");
+    assert!(log.contains("run --rm"));
+    assert!(log.contains(":/work"));
+    assert!(
+        !log.contains(":/work:Z"),
+        "docker fallback should strip SELinux relabel options from volume mounts: {log}"
+    );
+}
+
+#[test]
+fn podman_action_keeps_selinux_volume_labels_for_podman() {
+    let repo = TestRepo::new();
+    let fake = TempDir::new().expect("fake podman dir");
+    let fake_bin = make_fake_podman(fake.path());
+    repo.write(
+        ".ci/build.yml",
+        r#"
+on: [manual]
+execution:
+  shell: bash
+steps:
+  - name: podman native
+    use: podman
+    run: |
+      podman run --rm -v "$PWD:/work:Z" -w /work fake-image /bin/sh -c 'printf podman > out.txt'
+"#,
+    );
+
+    let mut command = repo.ci();
+    command.env("PATH", path_with_fake_bin(&fake_bin)).args([
+        "run",
+        "--container-runtime",
+        "podman",
+        "build",
+    ]);
+    assert_success(output(command));
+
+    assert_eq!(repo.read("out.txt"), "podman");
+    let log = std::fs::read_to_string(fake.path().join("podman.log")).expect("read podman log");
+    assert!(log.contains(":/work:Z"));
 }
 
 #[test]

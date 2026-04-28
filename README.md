@@ -215,6 +215,7 @@ Native `.ci/*.yml` steps can also use built-in `uses:` or `use:` action sources.
 - `commit`: stage paths and create a commit with `message`/`msg`; without paths it stages all changes with `git add -A`; staged paths may use `path`, `paths`, `file`, `files`, `pattern`, `patterns`, `source`, `src`, or `from`; set `staged: true` to commit only already staged changes
 - `sync`: pull and push the current branch, or use `mirror: true` with `source`/`src`/`from` and `destination`/`dest`/`to` remotes
 - `clean`: run `git clean -fd` by default; `ignored: true` maps to `git clean -fdx`, `ignored: only` maps to `git clean -fdX`, `purge: true` runs `git fetch --all --prune`, `cargo: true` runs `cargo clean`, `path` or `paths` removes repo-relative targets, and native `.ci/*.yml` steps may extend the cleanup with an inline `run:` block
+- `podman`: run an inline Bash script with a `podman` function backed by the selected container runtime; auto/runtime selection still prefers Podman, then Docker, and Docker runs strip Podman SELinux relabel mount options such as `:Z`/`:z`
 
 `export` handles files and build outputs. `commit` and `sync` are separate repository actions.
 
@@ -242,6 +243,11 @@ steps:
     message: "aur: update package metadata"
   - use: sync
     strategy: rebase
+  - name: Run Butane in a container
+    use: podman
+    shell: bash
+    run: |
+      podman run --rm -v "$PWD:/work:Z" -w /work quay.io/coreos/butane:release --help
   - use: clean
     purge: true
     cargo: true

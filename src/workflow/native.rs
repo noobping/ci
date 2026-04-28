@@ -222,7 +222,10 @@ pub(crate) fn is_native_inline_action_builtin(uses: &str) -> bool {
         .unwrap_or(uses)
         .trim()
         .to_ascii_lowercase();
-    matches!(normalized.as_str(), "clean" | "ci/clean")
+    matches!(
+        normalized.as_str(),
+        "clean" | "ci/clean" | "podman" | "ci/podman" | "docker" | "ci/docker"
+    )
 }
 
 fn stringify_yaml_map(map: BTreeMap<String, Value>) -> BTreeMap<String, String> {
