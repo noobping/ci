@@ -174,6 +174,10 @@ pub(crate) fn run_native_yaml(
         ctx.output.info(format!("--> {step_name}"));
 
         let status = if step.uses.is_some() {
+            let mut state = BuiltinStepState {
+                artifacts,
+                cache_state: &mut cache_state,
+            };
             run_native_uses_step(
                 ctx,
                 invocation.container_runtime,
@@ -181,8 +185,7 @@ pub(crate) fn run_native_yaml(
                 step,
                 &expr,
                 forwarded_args,
-                artifacts,
-                &mut cache_state,
+                &mut state,
             )?
         } else if let Some(run) = step.run.as_deref() {
             let shell = step
@@ -574,8 +577,7 @@ fn run_native_uses_step(
     step: &NativeStep,
     expr: &ExpressionContext<'_>,
     forwarded_args: Option<&[String]>,
-    artifacts: &mut ArtifactSession,
-    cache_state: &mut CacheState,
+    state: &mut BuiltinStepState<'_>,
 ) -> Result<i32> {
     let uses = step.uses.as_deref().ok_or_else(|| {
         CiError::Message(format!(
@@ -617,11 +619,7 @@ fn run_native_uses_step(
         container_runtime,
         expr,
     };
-    let mut state = BuiltinStepState {
-        artifacts,
-        cache_state,
-    };
-    run_builtin_step(ctx, &invocation, &mut state)?.ok_or_else(|| {
+    run_builtin_step(ctx, &invocation, state)?.ok_or_else(|| {
         CiError::Message(format!(
             "{} uses unsupported native action source `{uses}`",
             resolved.path.display()
