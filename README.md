@@ -1,6 +1,9 @@
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 [![Release](https://github.com/noobping/ci/actions/workflows/release.yml/badge.svg)](https://github.com/noobping/ci/actions/workflows/release.yml)
+![status: archived](https://img.shields.io/badge/status-archived-red)
+
+> I no longer maintain this codebase, as I’ve switched to using the [pipeline](https://github.com/noobping/pipeline).
 
 # ci
 
